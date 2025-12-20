@@ -46,7 +46,7 @@ jobs:
           PGUSER: postgres
           PGPASSWORD: postgres
           PGDATABASE: postgres
-        run: node services/billing-service/tools/migrate-runner.js --dry-run
+        run: node services/billing-service/tools/migrate-runner.cjs --dry-run
 
       - name: Apply migrations (smoke)
         if: github.event_name == 'workflow_dispatch'
@@ -56,4 +56,4 @@ jobs:
           PGUSER: postgres
           PGPASSWORD: postgres
           PGDATABASE: postgres
-        run: node services/billing-service/tools/migrate-runner.js
+        run: node services/billing-service/tools/migrate-runner.cjs

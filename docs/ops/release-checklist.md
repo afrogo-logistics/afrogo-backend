@@ -4,7 +4,7 @@ Billing release checklist (production readiness)
 Follow these steps before enabling strict ledger enforcement in production.
 
 1) Ensure migrations applied to DB (staging then prod)
-   - Use `services/billing-service/tools/migrate-runner.js` in dry-run mode first.
+   - Use `services/billing-service/tools/migrate-runner.cjs` in dry-run mode first.
    - Ensure `pgcrypto` extension exists (ops may need to create it once).
 
 2) Run WarGames against staging Aurora
