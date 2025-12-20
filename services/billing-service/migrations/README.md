@@ -16,10 +16,10 @@ set PGPORT=5432
 set PGUSER=postgres
 set PGPASSWORD=postgres
 set PGDATABASE=postgres
-node services\billing-service\tools\migrate-runner.js
+node services\billing-service\tools\migrate-runner.cjs
 
 # Dry-run (prints migrations but does not execute)
-node services\billing-service\tools\migrate-runner.js --dry-run
+node services\billing-service\tools\migrate-runner.cjs --dry-run
 ```
 
 CI validation
