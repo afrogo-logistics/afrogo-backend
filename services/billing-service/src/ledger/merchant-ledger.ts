@@ -14,13 +14,13 @@ export function normalizeMoney(amount: number | string): number {
 }
 
 // We keep a typed upsert that delegates to the query layer for actual DB work.
-export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceRecord, payment: { amount: number | string; currency?: string; providerReference?: string; lastEventDbId?: number | string; lastEventTime?: string }) {
+export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceRecord, payment: { amount: number | string; currency?: string; providerReference?: string; lastEventDbId?: number | string; lastEventTime?: string; lastEventSeq?: number }) {
   // Delegate normalization to the shared JS helper
-  const params = ledgerCjs.buildLedgerParams(invoice as any, { amount: payment.amount, currency: payment.currency, providerReference: payment.providerReference, lastEventDbId: payment.lastEventDbId, lastEventTime: payment.lastEventTime });
+  const params = ledgerCjs.buildLedgerParams(invoice as any, { amount: payment.amount, currency: payment.currency, providerReference: payment.providerReference, lastEventDbId: payment.lastEventDbId, lastEventTime: payment.lastEventTime, lastEventSeq: payment.lastEventSeq });
   // Delegate DB upsert to existing pg-client.queryWithRetry via SQL here
   const sql = `
-    INSERT INTO merchant_ledger (id, invoice_id, merchant_id, amount, currency, type, provider_reference, paid_at, created_at, updated_at, last_event_time, last_event_db_id)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,$10)
+    INSERT INTO merchant_ledger (id, invoice_id, merchant_id, amount, currency, type, provider_reference, paid_at, created_at, last_event_time, last_event_db_id, last_event_seq, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
     ON CONFLICT (invoice_id) DO UPDATE SET
       amount = EXCLUDED.amount,
       currency = EXCLUDED.currency,
@@ -28,7 +28,8 @@ export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceR
       paid_at = EXCLUDED.paid_at,
       updated_at = NOW(),
       last_event_time = EXCLUDED.last_event_time,
-      last_event_db_id = EXCLUDED.last_event_db_id
+      last_event_db_id = EXCLUDED.last_event_db_id,
+      last_event_seq = EXCLUDED.last_event_seq
     WHERE (
       EXCLUDED.last_event_time IS NOT NULL AND (
         merchant_ledger.last_event_time IS NULL OR
@@ -36,8 +37,8 @@ export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceR
         (
           EXCLUDED.last_event_time = merchant_ledger.last_event_time AND
           (
-            merchant_ledger.last_event_db_id IS NULL OR
-            EXCLUDED.last_event_db_id IS NOT NULL AND EXCLUDED.last_event_db_id >= merchant_ledger.last_event_db_id
+            merchant_ledger.last_event_seq IS NULL OR
+            (EXCLUDED.last_event_seq IS NOT NULL AND EXCLUDED.last_event_seq >= merchant_ledger.last_event_seq)
           )
         )
       )
@@ -56,6 +57,7 @@ export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceR
     params.createdAt,
     params.lastEventTime,
     params.lastEventDbId,
+    params.lastEventSeq,
   ];
   // Lazy require to avoid circular import at module load
   const { queryWithRetry } = require('../../lib/pg-client');

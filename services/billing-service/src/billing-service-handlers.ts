@@ -355,10 +355,11 @@ export const paymentWebhook: APIGatewayProxyHandlerV2 = async (event) => {
           items: [],
         };
 
-        // Insert an immutable payment event into merchant_payment_events (idempotent)
-        // Prepare last event placeholders (will remain null if we can't persist/read the event)
-        let lastEventDbId: number | null = null;
-        let lastEventTime: string | null = null;
+  // Insert an immutable payment event into merchant_payment_events (idempotent)
+  // Prepare last event placeholders (will remain null if we can't persist/read the event)
+  let lastEventDbId: string | null = null;
+  let lastEventTime: string | null = null;
+  let lastEventSeq: number | null = null;
   // provider values declared outside try so catch can reference them for metrics
   let providerVal = payload.provider || 'unknown';
   let providerEventIdVal = payload.providerEventId || payload.providerReference || providerRef || `${invoiceId}:${Date.now()}`;
@@ -388,12 +389,21 @@ export const paymentWebhook: APIGatewayProxyHandlerV2 = async (event) => {
             rawPayload,
           ];
 
-          // Insert immutably (do nothing on conflict), then SELECT the row to retrieve id and event_time
-          await queryWithRetry(pg, insertEventSql, evParams, PG_MAX_RETRIES);
-          const selectSql = `SELECT id, event_time FROM merchant_payment_events WHERE provider=$1 AND provider_event_id=$2 LIMIT 1`;
-          const selRes = await queryWithRetry(pg, selectSql, [providerVal, providerEventIdVal], PG_MAX_RETRIES);
-          lastEventDbId = selRes.rows?.[0]?.id ?? null;
-          lastEventTime = selRes.rows?.[0]?.event_time ?? null;
+          // Insert immutably (do nothing on conflict), then RETURNING event_seq/id/event_time where available.
+          // If the INSERT returns no rows (conflict case), fall back to a SELECT to read the existing row.
+          const insertReturningSql = insertEventSql + ' RETURNING id, event_time, event_seq';
+          const insRes = await queryWithRetry(pg, insertReturningSql, evParams, PG_MAX_RETRIES);
+          if (insRes.rows && insRes.rows.length > 0) {
+            lastEventDbId = insRes.rows[0].id ?? null;
+            lastEventTime = insRes.rows[0].event_time ?? null;
+            lastEventSeq = insRes.rows[0].event_seq ?? null;
+          } else {
+            const selectSql = `SELECT id, event_time, event_seq FROM merchant_payment_events WHERE provider=$1 AND provider_event_id=$2 LIMIT 1`;
+            const selRes = await queryWithRetry(pg, selectSql, [providerVal, providerEventIdVal], PG_MAX_RETRIES);
+            lastEventDbId = selRes.rows?.[0]?.id ?? null;
+            lastEventTime = selRes.rows?.[0]?.event_time ?? null;
+            lastEventSeq = selRes.rows?.[0]?.event_seq ?? null;
+          }
           const metricDuration = Date.now() - metricStart;
           console.log('[metrics] event_insert_success', { invoiceId, provider: providerVal, providerEventId: providerEventIdVal, durationMs: metricDuration });
           metrics.increment('event_insert_success', 1, { invoiceId, provider: providerVal });
@@ -412,6 +422,7 @@ export const paymentWebhook: APIGatewayProxyHandlerV2 = async (event) => {
             providerReference: providerRef,
             lastEventDbId: lastEventDbId ?? undefined,
             lastEventTime: lastEventTime ?? undefined,
+            lastEventSeq: lastEventSeq ?? undefined,
           });
           const upDur = Date.now() - upStart;
           console.log('[metrics] ledger_upsert_success', { invoiceId, ledgerId: res?.id ?? null, durationMs: upDur });

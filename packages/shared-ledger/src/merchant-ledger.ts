@@ -7,7 +7,7 @@ export function makeIdempotencyKey(invoiceId: string, month?: string): string {
   return createHash('sha256').update(key).digest('hex');
 }
 
-export function buildLedgerParams(invoice: InvoiceRecord, payment: { amount: number | string; currency?: string; providerReference?: string; lastEventDbId?: number | string; lastEventTime?: string }) {
+export function buildLedgerParams(invoice: InvoiceRecord, payment: { amount: number | string; currency?: string; providerReference?: string; lastEventDbId?: number | string; lastEventTime?: string; lastEventSeq?: number }) {
   const amountNum = normalizeMoney(payment.amount);
   const currency = payment.currency || invoice.currency || 'ZAR';
   const now = new Date().toISOString();
@@ -27,14 +27,15 @@ export function buildLedgerParams(invoice: InvoiceRecord, payment: { amount: num
     updatedAt: now,
     lastEventTime: payment.lastEventTime ?? null,
     lastEventDbId: payment.lastEventDbId ?? null,
+    lastEventSeq: payment.lastEventSeq ?? null,
     idempotencyKey: makeIdempotencyKey(invoice.invoiceId, month),
   } as const;
 }
 
 export function upsertParamsToSql(params: ReturnType<typeof buildLedgerParams>) {
   const sql = `
-    INSERT INTO merchant_ledger (id, invoice_id, merchant_id, amount, currency, provider_reference, paid_at, created_at, updated_at, last_event_time, last_event_db_id)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+  INSERT INTO merchant_ledger (id, invoice_id, merchant_id, amount, currency, provider_reference, paid_at, created_at, last_event_time, last_event_db_id, last_event_seq, updated_at)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
     ON CONFLICT (invoice_id) DO UPDATE SET
       amount = EXCLUDED.amount,
       currency = EXCLUDED.currency,
@@ -51,8 +52,8 @@ export function upsertParamsToSql(params: ReturnType<typeof buildLedgerParams>) 
         (
           EXCLUDED.last_event_time = merchant_ledger.last_event_time AND
           (
-            merchant_ledger.last_event_db_id IS NULL OR
-            EXCLUDED.last_event_db_id IS NOT NULL AND EXCLUDED.last_event_db_id >= merchant_ledger.last_event_db_id
+            merchant_ledger.last_event_seq IS NULL OR
+            (EXCLUDED.last_event_seq IS NOT NULL AND EXCLUDED.last_event_seq >= merchant_ledger.last_event_seq)
           )
         )
       )
@@ -69,9 +70,9 @@ export function upsertParamsToSql(params: ReturnType<typeof buildLedgerParams>) 
     params.providerReference,
     params.paidAt,
     params.createdAt,
-    params.updatedAt,
     params.lastEventTime,
     params.lastEventDbId,
+    params.lastEventSeq,
   ];
 
   return { sql, paramsArr } as const;
