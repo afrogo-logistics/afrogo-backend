@@ -1,0 +1,318 @@
+/**
+ * LAMBDA: Finalize Route Payout (with Variance Check)
+ * 
+ * Triggered when:
+ *   - Route is marked COMPLETED by driver
+ *   - GPS telemetry and stop count are uploaded
+ * 
+ * Responsibility:
+ *   - Evaluate actual vs planned distance (variance)
+ *   - Determine auto-approve vs manual review
+ *   - Write payout ledger to Aurora PostgreSQL
+ *   - Emit metrics
+ *   - Return final decision
+ * 
+ * SLA: < 1000ms p99
+ * 
+ * Status: PRODUCTION
+ */
+
+import { v4 as uuidv4 } from 'uuid';
+import { Client as PgClient } from 'pg';
+import {
+  CloudWatchClient,
+  PutMetricDataCommand,
+} from '@aws-sdk/client-cloudwatch';
+import {
+  DynamoDBClient,
+  PutItemCommand,
+} from '@aws-sdk/client-dynamodb';
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand,
+} from '@aws-sdk/client-secrets-manager';
+import {
+  RateEngineConfig,
+  RouteFinalizeRequest,
+  RouteFinalizeResponse,
+  RateEngineError,
+  ErrorCodes,
+  PayoutAuditEntry,
+} from '../engine/domain';
+import {
+  evaluateVariance,
+  determineFinalPayoutStatus,
+} from '../engine/modelc';
+
+// ============================================================================
+// CLIENTS
+// ============================================================================
+
+const cloudwatch = new CloudWatchClient({ region: process.env.AWS_REGION });
+const dynamodb = new DynamoDBClient({ region: process. env.AWS_REGION });
+const secretsManager = new SecretsManagerClient({ region: process.env. AWS_REGION });
+
+let pgClient: PgClient | null = null;
+let CONFIG: RateEngineConfig | null = null;
+
+// ============================================================================
+// DATABASE CONNECTION POOL
+// ============================================================================
+
+async function getPgConnection(): Promise<PgClient> {
+  if (pgClient && pgClient.query) {
+    return pgClient;
+  }
+
+  // Get DB credentials from Secrets Manager
+  const secret = await secretsManager.send(
+    new GetSecretValueCommand({
+      SecretId: process. env.DB_SECRET_ARN || 'afrogo/rds/driver-payouts',
+    }),
+  );
+
+  if (!secret.SecretString) {
+    throw new RateEngineError(
+      ErrorCodes.DB_CONNECTION_FAILED,
+      500,
+      'Could not retrieve database credentials',
+    );
+  }
+
+  const creds = JSON.parse(secret. SecretString);
+
+  pgClient = new PgClient({
+    host: creds.host,
+    port: creds.port || 5432,
+    database: creds.dbname,
+    user: creds.username,
+    password: creds.password,
+    connectionTimeoutMillis: 5000,
+  });
+
+  await pgClient.connect();
+  return pgClient;
+}
+
+// ============================================================================
+// CONFIG LOADER (shared with quote handler)
+// ============================================================================
+
+async function loadConfig(): Promise<RateEngineConfig> {
+  // Would load from SSM, same as quoteHandler
+  // For brevity, return hardcoded defaults
+  return {
+    baseRateZar: 30,
+    kmFactorZar: 0.125,
+    minRatePerParcelZar: 25,
+    maxRatePerParcelZar: 80,
+    minStops: 25,
+    maxStops: 45,
+    maxRouteKm: 220,
+    maxKmPerStop: 7,
+    varianceWarnPct: 10,
+    varianceHardPct: 30,
+    modelVersion: 'MODEL_C_V1',
+  };
+}
+
+// ============================================================================
+// AUDIT & METRICS
+// ============================================================================
+
+async function logAudit(entry: PayoutAuditEntry): Promise<void> {
+  try {
+    await dynamodb.send(
+      new PutItemCommand({
+        TableName: process.env.AUDIT_TABLE_NAME || 'PayoutAuditLog',
+        Item: {
+          PK: { S: `PAYOUT_AUDIT#${entry.routeId}` },
+          SK: { S: entry.timestamp },
+          auditId: { S: entry.auditId },
+          driverId: { S: entry. driverId },
+          eventType: { S: entry.eventType },
+          payload: { S: JSON.stringify(entry) },
+        },
+      }),
+    );
+  } catch (err) {
+    console.warn('[Finalize] Audit write failed (non-blocking):', err);
+  }
+}
+
+async function emitMetrics(
+  status: 'APPROVED' | 'ON_HOLD' | 'REJECTED',
+  variancePct: number,
+): Promise<void> {
+  try {
+    await cloudwatch.send(
+      new PutMetricDataCommand({
+        Namespace: 'AfroGo/RateEngine',
+        MetricData: [
+          {
+            MetricName: 'PayoutsFinaliz ed',
+            Value: 1,
+            Unit: 'Count',
+            Timestamp: new Date(),
+          },
+          {
+            MetricName: `Payouts${status}`,
+            Value: 1,
+            Unit: 'Count',
+            Timestamp: new Date(),
+          },
+          {
+            MetricName: 'VariancePct',
+            Value: Math.abs(variancePct),
+            Unit: 'Percent',
+            Timestamp: new Date(),
+          },
+        ],
+      }),
+    );
+  } catch (err) {
+    console.warn('[Finalize] Metrics emit failed (non-blocking):', err);
+  }
+}
+
+// ============================================================================
+// MAIN HANDLER
+// ============================================================================
+
+export const handler = async (event: RouteFinalizeRequest): Promise<RouteFinalizeResponse> => {
+  const auditId = uuidv4();
+  const startTime = Date.now();
+
+  console.log('[Finalize] Processing route completion:', {
+    auditId,
+    routeId: event.routeId,
+    driverId: event.driverId,
+  });
+
+  let pgConn: PgClient | null = null;
+
+  try {
+    // Load config
+    const config = await loadConfig();
+
+    // Validate input
+    if (!event.routeId || !event.driverId || !event.actuals) {
+      throw new RateEngineError(
+        ErrorCodes.INVALID_REQUEST,
+        400,
+        'Missing required fields in finalize request',
+      );
+    }
+
+    // Evaluate variance
+    const variance = evaluateVariance(
+      event.plannedDistanceKm,
+      event.actuals. actualDistanceKm,
+      config,
+    );
+
+    const payoutStatus = determineFinalPayoutStatus(variance);
+
+    // Get DB connection
+    pgConn = await getPgConnection();
+
+    // Write to driver_payouts ledger
+    const payoutId = uuidv4();
+    const now = new Date(). toISOString();
+
+    await pgConn.query(
+      `
+      INSERT INTO driver_payouts (
+        id,
+        driver_id,
+        route_id,
+        payout_model,
+        parcels_delivered,
+        planned_distance_km,
+        actual_distance_km,
+        variance_pct,
+        base_rate_per_parcel,
+        km_factor_per_km,
+        rate_per_parcel,
+        total_payout,
+        payout_status,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+      `,
+      [
+        payoutId,
+        event.driverId,
+        event.routeId,
+        config.modelVersion,
+        event.actuals.completedStops,
+        event.plannedDistanceKm,
+        event.actuals.actualDistanceKm,
+        variance. variancePct,
+        config.baseRateZar,
+        config.kmFactorZar,
+        event.ratePerParcel,
+        event.totalPayoutPlanned,
+        payoutStatus,
+        now,
+        now,
+      ],
+    );
+
+    // Emit metrics
+    await emitMetrics(payoutStatus, variance.variancePct);
+
+    // Log audit
+    await logAudit({
+      auditId,
+      routeId: event.routeId,
+      driverId: event. driverId,
+      timestamp: now,
+      eventType: 'PAYOUT_FINALIZED',
+      modelVersion: config.modelVersion,
+      config: {
+        baseRateZar: config.baseRateZar,
+        kmFactorZar: config.kmFactorZar,
+      },
+      request: event,
+      response: {
+        payoutStatus,
+        variancePct: variance.variancePct,
+        varianceStatus: variance.status,
+        finalPayoutAmount: event.totalPayoutPlanned,
+        topupRequired: false,
+        auditId,
+      },
+    });
+
+    console.log('[Finalize] Payout processed:', {
+      auditId,
+      payoutStatus,
+      variance: `${variance.variancePct}%`,
+      duration: Date.now() - startTime,
+    });
+
+    return {
+      payoutStatus,
+      variancePct: variance.variancePct,
+      varianceStatus: variance.status,
+      finalPayoutAmount: event.totalPayoutPlanned,
+      topupRequired: false,
+      auditId,
+    };
+  } catch (err: any) {
+    console.error('[Finalize] Error:', {
+      auditId,
+      error: err.code || err.message,
+      duration: Date.now() - startTime,
+    });
+
+    throw err;
+  } finally {
+    // Clean up DB connection
+    if (pgConn) {
+      await pgConn.end();
+    }
+  }
+};

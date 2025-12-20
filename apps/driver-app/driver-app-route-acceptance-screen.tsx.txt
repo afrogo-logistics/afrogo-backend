@@ -1,0 +1,469 @@
+/**
+ * DRIVER APP - Route Acceptance Screen
+ * 
+ * React Native component displaying:
+ *   - Zone & geometry (stops, distance, duration)
+ *   - Fixed payout with breakdown
+ *   - Model C transparency (base + distance component)
+ *   - Accept/Decline buttons
+ * 
+ * Status: PRODUCTION
+ * Framework: React Native + Redux
+ */
+
+import React, { useState } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  ScrollView,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
+import { useDispatch, useSelector } from 'react-redux';
+
+interface RouteOffer {
+  routeId: string;
+  zoneName: string;
+  stopCount: number;
+  plannedDistanceKm: number;
+  estimatedDurationMin: number;
+  financials: {
+    totalEarnings: number;
+    ratePerParcel: number;
+    currency: string;
+    modelVersion: string;
+    baseRate: number;
+    kmFactor: number;
+    distanceComponent: number;
+  };
+  confidence: {
+    isGuaranteed: boolean;
+    label: string;
+  };
+}
+
+interface Props {
+  route: { params: { offer: RouteOffer } };
+  navigation: any;
+}
+
+export const RouteAcceptanceScreen: React.FC<Props> = ({ route, navigation }) => {
+  const { offer } = route.params;
+  const dispatch = useDispatch();
+  const { user } = useSelector((state: any) => state.auth);
+
+  const [isAccepting, setIsAccepting] = useState(false);
+
+  const handleAccept = async () => {
+    if (!user?. driverId) {
+      Alert. alert('Error', 'Driver ID not found');
+      return;
+    }
+
+    setIsAccepting(true);
+
+    try {
+      const response = await fetch(
+        `${process.env.API_URL}/driver/routes/${offer.routeId}/accept`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${user.authToken}`,
+          },
+          body: JSON.stringify({
+            driverId: user.driverId,
+            acceptedAt: new Date().toISOString(),
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to accept route');
+      }
+
+      // Navigate to active route
+      navigation.replace('ActiveRoute', { routeId: offer.routeId });
+    } catch (error) {
+      console.error('Error accepting route:', error);
+      Alert.alert('Error', 'Failed to accept route.  Please try again.');
+    } finally {
+      setIsAccepting(false);
+    }
+  };
+
+  const hourlyRate = (offer.financials.totalEarnings / offer.estimatedDurationMin) * 60;
+
+  return (
+    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+      {/* HEADER */}
+      <View style={styles.header}>
+        <Text style={styles.title}>Route Offer</Text>
+        <TouchableOpacity onPress={() => navigation.goBack()}>
+          <Text style={styles.closeBtn}>✕</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ROUTE INFO CARD */}
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>{offer.zoneName}</Text>
+
+        <View style={styles.infoRow}>
+          <View style={styles.infoPair}>
+            <Text style={styles.label}>Stops</Text>
+            <Text style={styles.value}>{offer. stopCount}</Text>
+          </View>
+          <View style={styles.infoPair}>
+            <Text style={styles.label}>Distance</Text>
+            <Text style={styles.value}>{offer. plannedDistanceKm.toFixed(1)} km</Text>
+          </View>
+          <View style={styles.infoPair}>
+            <Text style={styles.label}>Duration</Text>
+            <Text style={styles.value}>
+              {Math.floor(offer.estimatedDurationMin / 60)}h {offer.estimatedDurationMin % 60}m
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      {/* EARNINGS CARD - PROMINENT */}
+      <View style={[styles.card, styles.earningsCard]}>
+        <View style={styles.earningsHeader}>
+          <Text style={styles.earningsLabel}>Fixed Earnings</Text>
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>LOCKED</Text>
+          </View>
+        </View>
+
+        {/* TOTAL AMOUNT */}
+        <View style={styles.amountContainer}>
+          <Text style={styles.currency}>{offer.financials.currency}</Text>
+          <Text style={styles.amount}>
+            {offer.financials.totalEarnings.toFixed(2)}
+          </Text>
+        </View>
+
+        {/* HOURLY EQUIVALENT */}
+        <Text style={styles.hourlyRate}>
+          ≈ {offer.financials.currency} {hourlyRate.toFixed(2)}/hour
+        </Text>
+
+        {/* MODEL C BREAKDOWN */}
+        <View style={styles.breakdownSection}>
+          <Text style={styles.breakdownTitle}>How we calculated this:</Text>
+
+          <View style={styles.breakdownItem}>
+            <Text style={styles.breakdownLabel}>Base rate (per stop)</Text>
+            <Text style={styles.breakdownValue}>
+              {offer.financials. currency} {offer.financials.baseRate.toFixed(2)} × {offer.stopCount}
+            </Text>
+            <Text style={styles.breakdownResult}>
+              = {offer.financials.currency}{' '}
+              {(offer.financials.baseRate * offer.stopCount).toFixed(2)}
+            </Text>
+          </View>
+
+          <View style={styles.breakdownItem}>
+            <Text style={styles.breakdownLabel}>Distance allowance</Text>
+            <Text style={styles.breakdownValue}>
+              {offer.financials. currency} {offer.financials. kmFactor.toFixed(3)}/km × {offer.plannedDistanceKm.toFixed(1)} km
+            </Text>
+            <Text style={styles.breakdownResult}>
+              = {offer. financials.currency} {offer.financials.distanceComponent.toFixed(2)}
+            </Text>
+          </View>
+
+          <View style={styles.divider} />
+
+          <View style={styles.totalBreakdown}>
+            <Text style={styles.breakdownLabel}>Rate per stop</Text>
+            <Text style={styles.breakdownValue}>
+              {offer.financials.currency} {offer.financials.ratePerParcel.toFixed(2)}
+            </Text>
+          </View>
+
+          <View style={styles.totalBreakdown}>
+            <Text style={styles.breakdownLabel}>Total ({offer.stopCount} stops)</Text>
+            <Text style={styles.breakdownValueBold}>
+              {offer.financials.currency} {offer.financials.totalEarnings.toFixed(2)}
+            </Text>
+          </View>
+        </View>
+
+        {/* GUARANTEE STATEMENT */}
+        <View style={styles.guaranteeBox}>
+          <Text style={styles.guaranteeIcon}>✓</Text>
+          <Text style={styles.guaranteeText}>
+            This amount is guaranteed.  You'll earn{' '}
+            <Text style={styles.bold}>{offer.financials.currency} {offer.financials.totalEarnings.toFixed(2)}</Text> for
+            completing all {offer.stopCount} stops, regardless of the actual route taken.
+          </Text>
+        </View>
+
+        {/* CONFIDENCE LABEL */}
+        <View style={styles.confidenceBox}>
+          <Text style={styles.confidenceText}>{offer.confidence.label}</Text>
+        </View>
+      </View>
+
+      {/* TERMS LINK */}
+      <TouchableOpacity style={styles.termsLink}>
+        <Text style={styles. termsText}>View detailed route & terms</Text>
+      </TouchableOpacity>
+
+      {/* ACTION BUTTONS */}
+      <View style={styles.actionContainer}>
+        <TouchableOpacity
+          style={[styles.button, styles.declineButton]}
+          onPress={() => navigation.goBack()}
+          disabled={isAccepting}
+        >
+          <Text style={styles.buttonText}>Decline</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles. button, styles.acceptButton]}
+          onPress={handleAccept}
+          disabled={isAccepting}
+        >
+          {isAccepting ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.buttonText}>Accept Route</Text>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.spacer} />
+    </ScrollView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  closeBtn: {
+    fontSize: 24,
+    color: '#999',
+  },
+  card: {
+    backgroundColor: '#fff',
+    marginHorizontal: 12,
+    marginVertical: 8,
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e8e8e8',
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    marginBottom: 16,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  infoPair: {
+    alignItems: 'center',
+  },
+  label: {
+    fontSize: 12,
+    color: '#999',
+    marginBottom: 4,
+    fontWeight: '500',
+  },
+  value: {
+    fontSize: 16,
+    color: '#1a1a1a',
+    fontWeight: '600',
+  },
+  earningsCard: {
+    borderLeftWidth: 4,
+    borderLeftColor: '#27ae60',
+  },
+  earningsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  earningsLabel: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '600',
+  },
+  badge: {
+    backgroundColor: '#d5f4e6',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  badgeText: {
+    fontSize: 11,
+    color: '#27ae60',
+    fontWeight: '700',
+  },
+  amountContainer: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    marginBottom: 4,
+  },
+  currency: {
+    fontSize: 14,
+    color: '#666',
+    marginRight: 4,
+    fontWeight: '600',
+  },
+  amount: {
+    fontSize: 42,
+    color: '#27ae60',
+    fontWeight: '700',
+  },
+  hourlyRate: {
+    fontSize: 14,
+    color: '#999',
+    marginBottom: 16,
+  },
+  breakdownSection: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: 12,
+    marginVertical: 12,
+  },
+  breakdownTitle: {
+    fontSize: 12,
+    color: '#666',
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  breakdownItem: {
+    marginBottom: 12,
+  },
+  breakdownLabel: {
+    fontSize: 13,
+    color: '#1a1a1a',
+    fontWeight: '500',
+  },
+  breakdownValue: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 2,
+  },
+  breakdownResult: {
+    fontSize: 13,
+    color: '#27ae60',
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#e0e0e0',
+    marginVertical: 12,
+  },
+  totalBreakdown: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#e0e0e0',
+  },
+  breakdownValueBold: {
+    fontSize: 14,
+    color: '#27ae60',
+    fontWeight: '700',
+  },
+  guaranteeBox: {
+    flexDirection: 'row',
+    backgroundColor: '#d5f4e6',
+    borderRadius: 8,
+    padding: 12,
+    marginVertical: 12,
+  },
+  guaranteeIcon: {
+    fontSize: 20,
+    color: '#27ae60',
+    marginRight: 8,
+  },
+  guaranteeText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#1a1a1a',
+    lineHeight: 19,
+  },
+  bold: {
+    fontWeight: '700',
+  },
+  confidenceBox: {
+    backgroundColor: '#fffacd',
+    borderLeftWidth: 3,
+    borderLeftColor: '#f39c12',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 4,
+  },
+  confidenceText: {
+    fontSize: 12,
+    color: '#b8860b',
+    fontWeight: '500',
+  },
+  termsLink: {
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  termsText: {
+    fontSize: 13,
+    color: '#3498db',
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
+  actionContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingVertical: 16,
+    gap: 12,
+  },
+  button: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  declineButton: {
+    backgroundColor: '#f0f0f0',
+  },
+  acceptButton: {
+    backgroundColor: '#27ae60',
+  },
+  buttonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  spacer: {
+    height: 20,
+  },
+});
+
+export default RouteAcceptanceScreen;

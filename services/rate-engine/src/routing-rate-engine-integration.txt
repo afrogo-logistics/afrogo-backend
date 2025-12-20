@@ -1,0 +1,407 @@
+/**
+ * ROUTING SERVICE - Rate Engine Integration
+ * 
+ * Responsibility:
+ *   - Orchestrate batch route generation
+ *   - Call Rate Engine for payout quotes
+ *   - Handle guardrail rejections
+ *   - Persist route + payout snapshot to DynamoDB
+ *   - Coordinate with Driver Service for push notifications
+ * 
+ * Triggers: EventBridge daily schedule (06:30 UTC+2)
+ * 
+ * Status: PRODUCTION
+ * Version: 1.0.0
+ */
+
+import { v4 as uuidv4 } from 'uuid';
+import {
+  DynamoDBClient,
+  PutItemCommand,
+  UpdateItemCommand,
+} from '@aws-sdk/client-dynamodb';
+import {
+  CloudWatchClient,
+  PutMetricDataCommand,
+} from '@aws-sdk/client-cloudwatch';
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import axios, { AxiosInstance } from 'axios';
+
+import {
+  RateEngineConfig,
+  RouteQuoteRequest,
+  RouteQuoteResponse,
+  RateEngineError,
+  ErrorCodes,
+} from '../engine/domain';
+
+// ============================================================================
+// CLIENTS
+// ============================================================================
+
+const ddb = new DynamoDBClient({ region: process.env.AWS_REGION });
+const cloudwatch = new CloudWatchClient({ region: process.env.AWS_REGION });
+const sqs = new SQSClient({ region: process.env.AWS_REGION });
+
+// ============================================================================
+// RATE ENGINE CLIENT (thin HTTP wrapper)
+// ============================================================================
+
+class RateEngineClient {
+  private client: AxiosInstance;
+
+  constructor(baseURL: string) {
+    this. client = axios.create({
+      baseURL,
+      timeout: 5000,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process. env.RATE_ENGINE_API_KEY}`,
+      },
+    });
+  }
+
+  async quoteRoute(req: RouteQuoteRequest): Promise<RouteQuoteResponse> {
+    try {
+      const response = await this.client.post<RouteQuoteResponse>(
+        '/internal/rate-engine/quote-route',
+        req,
+      );
+      return response.data;
+    } catch (error: any) {
+      console.error('[RateEngineClient] Quote failed:', {
+        routeId: req.routeId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      throw new RateEngineError(
+        ErrorCodes.CALCULATION_ERROR,
+        500,
+        'Rate Engine quote failed',
+        { routeId: req.routeId, error: error.message },
+      );
+    }
+  }
+}
+
+const rateEngineClient = new RateEngineClient(
+  process.env.RATE_ENGINE_API_URL || 'https://api.afroogo.com/internal',
+);
+
+// ============================================================================
+// DOMAIN TYPES
+// ============================================================================
+
+export interface Parcel {
+  parcelId: string;
+  merchantId: string;
+  recipientLat: number;
+  recipientLng: number;
+  weight?: number;
+  service: 'AFROGO_DOOR' | 'AFROCOLLECT';
+}
+
+export interface RouteCandidate {
+  zoneId: string;
+  parcels: Parcel[];
+  plannedDistanceKm: number;
+  estimatedDurationMin: number;
+}
+
+export interface GeneratedRoute {
+  routeId: string;
+  status: 'ACCEPTED' | 'REJECTED';
+  quote?: RouteQuoteResponse;
+  rejectionReason?: string;
+}
+
+// ============================================================================
+// DDB OPERATIONS
+// ============================================================================
+
+/**
+ * Store route + payout snapshot in DynamoDB (single write, atomic)
+ */
+async function putRouteItem(
+  routeId: string,
+  serviceDate: string,
+  zoneId: string,
+  candidate: RouteCandidate,
+  quote: RouteQuoteResponse,
+  parcelIds: string[],
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  const payoutSnapshot = {
+    baseRate: quote.configSnapshot?. baseRateZar ??  30. 0,
+    kmFactor: quote.configSnapshot?. kmFactorZar ?? 0.125,
+    ratePerParcel: quote.ratePerParcel,
+    parcelCount: candidate.parcels.length,
+    totalPayout: quote.totalPayout,
+    currency: quote.currency,
+    lockedAt: quote.calculatedAt,
+    guardrailStatus: quote.guardrailStatus,
+    guardrailDetails: quote.guardrailDetails ??  null,
+    modelVersion: quote.modelVersion,
+  };
+
+  const actuals = {
+    telemetryKm: 0,
+    completedStops: 0,
+    variancePct: 0,
+    finalizedAt: null,
+  };
+
+  try {
+    await ddb.send(
+      new PutItemCommand({
+        TableName: process. env.ROUTES_TABLE_NAME || 'Routes',
+        Item: {
+          PK: { S: `ROUTE#${routeId}` },
+          SK: { S: 'METADATA' },
+          routeId: { S: routeId },
+          serviceDate: { S: serviceDate },
+          zoneId: { S: zoneId },
+          driverId: { S: 'UNASSIGNED' },
+          status: { S: 'OFFERED' },
+          stopCount: { N: String(candidate.parcels.length) },
+          plannedDistanceKm: { N: String(candidate.plannedDistanceKm) },
+          estimatedDurationMin: { N: String(candidate.estimatedDurationMin) },
+          payoutModel: { S: quote.modelVersion },
+          payoutSnapshot: { S: JSON.stringify(payoutSnapshot) },
+          parcels: { S: JSON.stringify(parcelIds) },
+          actuals: { S: JSON.stringify(actuals) },
+          createdAt: { S: now },
+          updatedAt: { S: now },
+        },
+      }),
+    );
+
+    console.log('[Routing] Route stored in DynamoDB:', { routeId, payout: quote.totalPayout });
+  } catch (error) {
+    console.error('[Routing] Failed to store route in DynamoDB:', error);
+    throw error;
+  }
+}
+
+/**
+ * Send rejected route to Ops queue for manual review
+ */
+async function sendRejectedRouteToOps(
+  routeId: string,
+  quote: RouteQuoteResponse,
+  candidate: RouteCandidate,
+): Promise<void> {
+  try {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: process. env.OPS_REVIEW_QUEUE_URL || '',
+        MessageBody: JSON.stringify({
+          type: 'ROUTE_REJECTED_BY_GUARDRAILS',
+          routeId,
+          zoneId: candidate.zoneId,
+          parcelCount: candidate.parcels.length,
+          plannedDistanceKm: candidate. plannedDistanceKm,
+          guardrailStatus: quote.guardrailStatus,
+          guardrailDetails: quote.guardrailDetails,
+          timestamp: new Date().toISOString(),
+        }),
+      }),
+    );
+
+    console.log('[Routing] Rejected route sent to Ops queue:', {
+      routeId,
+      reason: quote.guardrailStatus,
+    });
+  } catch (error) {
+    console.warn('[Routing] Failed to send to Ops queue (non-blocking):', error);
+  }
+}
+
+/**
+ * Notify Driver Service of new route offers
+ */
+async function notifyDriverServiceOfNewRoutes(
+  routeIds: string[],
+  zoneId: string,
+): Promise<void> {
+  // This could be EventBridge, SNS, or direct HTTP
+  // For now, log it; you'd implement Driver Service subscription separately
+  console.log('[Routing] New routes available for drivers:', {
+    routeIds,
+    zoneId,
+    count: routeIds.length,
+  });
+
+  // Example: EventBridge PutEvents to driver-service event bus
+  // or SNS publish to driver topic
+}
+
+/**
+ * Emit metrics for observability
+ */
+async function emitRoutingMetrics(
+  generated: GeneratedRoute[],
+): Promise<void> {
+  const accepted = generated.filter(r => r.status === 'ACCEPTED'). length;
+  const rejected = generated.filter(r => r.status === 'REJECTED').length;
+
+  try {
+    await cloudwatch.send(
+      new PutMetricDataCommand({
+        Namespace: 'AfroGo/Routing',
+        MetricData: [
+          {
+            MetricName: 'RoutesGenerated',
+            Value: generated.length,
+            Unit: 'Count',
+            Timestamp: new Date(),
+          },
+          {
+            MetricName: 'RoutesAccepted',
+            Value: accepted,
+            Unit: 'Count',
+            Timestamp: new Date(),
+          },
+          {
+            MetricName: 'RoutesRejected',
+            Value: rejected,
+            Unit: 'Count',
+            Timestamp: new Date(),
+          },
+        ],
+      }),
+    );
+  } catch (error) {
+    console.warn('[Routing] Metrics emit failed (non-blocking):', error);
+  }
+}
+
+// ============================================================================
+// MAIN ORCHESTRATION
+// ============================================================================
+
+/**
+ * Generate daily routes for a zone
+ *
+ * Flow:
+ *   1. For each route candidate:
+ *      a. Quote the route with Rate Engine
+ *      b. Handle ACCEPTED: store in DynamoDB
+ *      c. Handle REJECTED: send to Ops
+ *   2. Notify Driver Service
+ *   3. Emit metrics
+ */
+export async function generateDailyRoutesForZone(
+  serviceDate: string,
+  zoneId: string,
+  candidates: RouteCandidate[],
+): Promise<GeneratedRoute[]> {
+  console.log('[Routing] Starting route generation:', {
+    serviceDate,
+    zoneId,
+    candidates: candidates.length,
+  });
+
+  const results: GeneratedRoute[] = [];
+  const acceptedRouteIds: string[] = [];
+
+  for (const candidate of candidates) {
+    const routeId = `ROUTE#${serviceDate}#${zoneId}#${uuidv4()}`;
+
+    try {
+      // Call Rate Engine
+      const quote = await rateEngineClient.quoteRoute({
+        routeId,
+        plannedDistanceKm: candidate. plannedDistanceKm,
+        parcelCount: candidate.parcels.length,
+        zoneId,
+      });
+
+      if (quote.status === 'ACCEPTED') {
+        // Store route
+        await putRouteItem(
+          routeId,
+          serviceDate,
+          zoneId,
+          candidate,
+          quote,
+          candidate.parcels. map(p => p.parcelId),
+        );
+
+        results.push({ routeId, status: 'ACCEPTED', quote });
+        acceptedRouteIds.push(routeId);
+      } else {
+        // Rejected by guardrails
+        await sendRejectedRouteToOps(routeId, quote, candidate);
+
+        results.push({
+          routeId,
+          status: 'REJECTED',
+          rejectionReason: quote.guardrailStatus,
+          quote,
+        });
+      }
+    } catch (error: any) {
+      console.error('[Routing] Error processing candidate:', {
+        zoneId,
+        candidateParcels: candidate.parcels.length,
+        error: error.message,
+      });
+
+      results.push({
+        routeId,
+        status: 'REJECTED',
+        rejectionReason: 'RATE_ENGINE_ERROR',
+      });
+    }
+  }
+
+  // Notify Driver Service of accepted routes
+  if (acceptedRouteIds.length > 0) {
+    await notifyDriverServiceOfNewRoutes(acceptedRouteIds, zoneId);
+  }
+
+  // Emit metrics
+  await emitRoutingMetrics(results);
+
+  console.log('[Routing] Route generation complete:', {
+    serviceDate,
+    zoneId,
+    accepted: acceptedRouteIds.length,
+    rejected: results.filter(r => r.status === 'REJECTED').length,
+  });
+
+  return results;
+}
+
+/**
+ * EventBridge Lambda handler
+ * Triggered daily at 06:30 UTC+2
+ */
+export async function batchRouteGenerationHandler(event: any): Promise<void> {
+  const serviceDate = new Date().toISOString().split('T')[0];
+
+  console.log('[Routing] Batch generation triggered:', { serviceDate });
+
+  // Mock: in production, fetch unrouted parcels from Parcel Service
+  const candidates: RouteCandidate[] = [
+    {
+      zoneId: 'SOWETO_SOUTH',
+      parcels: Array.from({ length: 32 }, (_, i) => ({
+        parcelId: `PARCEL#${i + 1}`,
+        merchantId: `MERCHANT#${Math.floor(i / 4)}`,
+        recipientLat: -26.2625 + Math.random() * 0.01,
+        recipientLng: 27.8528 + Math.random() * 0.01,
+        service: 'AFROGO_DOOR' as const,
+      })),
+      plannedDistanceKm: 145.5,
+      estimatedDurationMin: 420,
+    },
+    // ...  more zones
+  ];
+
+  for (const candidate of candidates) {
+    await generateDailyRoutesForZone(serviceDate, candidate.zoneId, [candidate]);
+  }
+}

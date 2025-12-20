@@ -1,0 +1,264 @@
+/**
+ * DYNAMODB ROUTES TABLE - Schema & Operations
+ * 
+ * Single table design: Routes table serves Routing + Driver App + Ops
+ * 
+ * Primary Key:
+ *   PK = ROUTE#<routeId>
+ *   SK = METADATA (extensible: can add EVENTS, LOGS, etc.)
+ * 
+ * Global Secondary Indexes:
+ *   - StatusIndex: GSI on status + createdAt
+ *   - DriverIndex: GSI on driverId + createdAt
+ *   - DateIndex: GSI on serviceDate + zoneId
+ * 
+ * Status: PRODUCTION
+ */
+
+/**
+ * ROUTE ITEM STRUCTURE (TypeScript interface for documentation)
+ */
+export interface RouteItem {
+  // Primary Keys
+  PK: string; // "ROUTE#<routeId>"
+  SK: string; // "METADATA"
+
+  // Identifiers
+  routeId: string;
+  serviceDate: string; // YYYY-MM-DD
+  zoneId: string;
+
+  // Assignment
+  driverId: string; // "UNASSIGNED" initially, then "DRIVER#<id>"
+  status: 'OFFERED' | 'ASSIGNED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+
+  // Route geometry
+  stopCount: number; // e.g., 32
+  plannedDistanceKm: number; // e.g., 145. 5
+  estimatedDurationMin: number; // e.g., 420
+
+  // Payout snapshot (immutable at creation time)
+  payoutModel: string; // "MODEL_C_V1"
+  payoutSnapshot: {
+    baseRate: number; // 30. 0
+    kmFactor: number; // 0.125
+    ratePerParcel: number; // e.g., 45.19
+    parcelCount: number; // e. g., 32
+    totalPayout: number; // e.g., 1446.08 (ZAR)
+    currency: string; // "ZAR"
+    lockedAt: string; // ISO timestamp
+    guardrailStatus: string; // "ACCEPTED"
+    guardrailDetails: null | Record<string, unknown>;
+    modelVersion: string; // "MODEL_C_V1"
+  };
+
+  // Actual performance (updated post-completion)
+  actuals: {
+    telemetryKm: number; // GPS distance
+    completedStops: number;
+    variancePct: number;
+    finalizedAt: string | null;
+  };
+
+  // Parcel references
+  parcels: string[]; // ["PARCEL#123", "PARCEL#124", ...]
+
+  // Timestamps
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+// ============================================================================
+// CDK INFRASTRUCTURE (IaC for DynamoDB table)
+// ============================================================================
+
+import * as cdk from 'aws-cdk-lib';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+
+export class RoutesTableStack extends cdk.Stack {
+  constructor(scope: cdk. App, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Main table
+    const routesTable = new dynamodb.Table(this, 'RoutesTable', {
+      tableName: 'Routes',
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST, // On-demand scaling
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      pointInTimeRecovery: true, // Backup for disaster recovery
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+    });
+
+    // GSI: Query routes by status
+    routesTable.addGlobalSecondaryIndex({
+      indexName: 'StatusIndex',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb. AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI: Query routes by driver
+    routesTable.addGlobalSecondaryIndex({
+      indexName: 'DriverIndex',
+      partitionKey: { name: 'driverId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI: Query routes by date + zone
+    routesTable.addGlobalSecondaryIndex({
+      indexName: 'DateIndex',
+      partitionKey: { name: 'serviceDate', type: dynamodb.AttributeType. STRING },
+      sortKey: { name: 'zoneId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType. ALL,
+    });
+
+    // TTL: Auto-expire old routes (90 days)
+    routesTable.addTimeToLiveAttribute({
+      attributeName: 'expiresAt',
+    });
+
+    new cdk.CfnOutput(this, 'RoutesTableName', {
+      value: routesTable.tableName,
+      exportName: 'RoutesTableName',
+    });
+  }
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+import { DynamoDBClient, GetItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+
+const ddb = new DynamoDBClient({});
+
+/**
+ * Get a single route by routeId
+ */
+export async function getRoute(routeId: string): Promise<RouteItem | null> {
+  try {
+    const res = await ddb.send(
+      new GetItemCommand({
+        TableName: process.env.ROUTES_TABLE_NAME || 'Routes',
+        Key: {
+          PK: { S: `ROUTE#${routeId}` },
+          SK: { S: 'METADATA' },
+        },
+      }),
+    );
+
+    if (!res.Item) return null;
+
+    return {
+      PK: res.Item.PK.S! ,
+      SK: res.Item.SK.S!,
+      routeId: res.Item. routeId.S!,
+      serviceDate: res.Item.serviceDate.S!,
+      zoneId: res.Item.zoneId.S!,
+      driverId: res.Item. driverId.S!,
+      status: res.Item.status.S as any,
+      stopCount: Number(res.Item.stopCount. N),
+      plannedDistanceKm: Number(res.Item.plannedDistanceKm. N),
+      estimatedDurationMin: Number(res.Item. estimatedDurationMin.N),
+      payoutModel: res. Item.payoutModel.S! ,
+      payoutSnapshot: JSON.parse(res.Item.payoutSnapshot.S!),
+      actuals: JSON.parse(res.Item.actuals.S!),
+      parcels: JSON.parse(res.Item.parcels.S!),
+      createdAt: res.Item.createdAt.S!,
+      updatedAt: res.Item. updatedAt.S!,
+    };
+  } catch (error) {
+    console.error('[Routes] getRoute failed:', error);
+    throw error;
+  }
+}
+
+/**
+ * Update route status and actuals post-completion
+ */
+export async function finalizeRoute(
+  routeId: string,
+  actualDistanceKm: number,
+  completedStops: number,
+  variancePct: number,
+): Promise<void> {
+  const now = new Date(). toISOString();
+
+  try {
+    await ddb.send(
+      new UpdateItemCommand({
+        TableName: process.env.ROUTES_TABLE_NAME || 'Routes',
+        Key: {
+          PK: { S: `ROUTE#${routeId}` },
+          SK: { S: 'METADATA' },
+        },
+        UpdateExpression: 'SET #status = :status, #actuals = :actuals, #updated = :updated',
+        ExpressionAttributeNames: {
+          '#status': 'status',
+          '#actuals': 'actuals',
+          '#updated': 'updatedAt',
+        },
+        ExpressionAttributeValues: {
+          ':status': { S: 'COMPLETED' },
+          ':actuals': {
+            S: JSON.stringify({
+              telemetryKm: actualDistanceKm,
+              completedStops,
+              variancePct,
+              finalizedAt: now,
+            }),
+          },
+          ':updated': { S: now },
+        },
+      }),
+    );
+
+    console.log('[Routes] Route finalized:', {
+      routeId,
+      actualKm: actualDistanceKm,
+      variancePct,
+    });
+  } catch (error) {
+    console.error('[Routes] finalizeRoute failed:', error);
+    throw error;
+  }
+}
+
+/**
+ * Assign a route to a driver
+ */
+export async function assignRouteToDriver(
+  routeId: string,
+  driverId: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  try {
+    await ddb.send(
+      new UpdateItemCommand({
+        TableName: process.env.ROUTES_TABLE_NAME || 'Routes',
+        Key: {
+          PK: { S: `ROUTE#${routeId}` },
+          SK: { S: 'METADATA' },
+        },
+        UpdateExpression: 'SET #driver = :driver, #status = :status, #updated = :updated',
+        ExpressionAttributeNames: {
+          '#driver': 'driverId',
+          '#status': 'status',
+          '#updated': 'updatedAt',
+        },
+        ExpressionAttributeValues: {
+          ':driver': { S: driverId },
+          ':status': { S: 'ASSIGNED' },
+          ':updated': { S: now },
+        },
+      }),
+    );
+
+    console.log('[Routes] Route assigned:', { routeId, driverId });
+  } catch (error) {
+    console.error('[Routes] assignRouteToDriver failed:', error);
+    throw error;
+  }
+}

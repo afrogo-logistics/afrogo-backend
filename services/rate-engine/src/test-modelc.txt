@@ -1,0 +1,320 @@
+/**
+ * UNIT TESTS: Model C Engine
+ * 
+ * Test categories:
+ *   1. Model C formula (happy path + edge cases)
+ *   2.  Guardrails (all rejection reasons)
+ *   3.  Variance evaluation (boundaries at 10% and 30%)
+ *   4. Config edge cases (negative, zero, missing)
+ * 
+ * Run: npm test
+ * 
+ * Status: PRODUCTION
+ */
+
+import { describe, it, expect } from '@jest/globals';
+import {
+  applyGuardrails,
+  calculateModelCRate,
+  quoteRoute,
+  evaluateVariance,
+} from '../modelc';
+import { RateEngineConfig, RouteQuoteRequest } from '../domain';
+
+// ============================================================================
+// FIXTURES
+// ============================================================================
+
+const defaultConfig: RateEngineConfig = {
+  baseRateZar: 30,
+  kmFactorZar: 0.125,
+  minRatePerParcelZar: 25,
+  maxRatePerParcelZar: 80,
+  minStops: 25,
+  maxStops: 45,
+  maxRouteKm: 220,
+  maxKmPerStop: 7,
+  varianceWarnPct: 10,
+  varianceHardPct: 30,
+  modelVersion: 'MODEL_C_V1',
+};
+
+const baselineRequest: RouteQuoteRequest = {
+  routeId: 'TEST-001',
+  plannedDistanceKm: 145. 5,
+  parcelCount: 32,
+  zoneId: 'SOWETO_SOUTH',
+};
+
+// ============================================================================
+// TEST SUITE 1: Model C Formula
+// ============================================================================
+
+describe('Model C: calculateModelCRate', () => {
+  it('should calculate rate for baseline route', () => {
+    // Formula: 30 + (0.125 * 145.5) = 30 + 18.1875 = 48.1875 → 48.19
+    const rate = calculateModelCRate(145.5, defaultConfig);
+    expect(rate). toBeCloseTo(48.19, 2);
+  });
+
+  it('should floor rate at minRatePerParcelZar', () => {
+    // Very short route: 30 + (0.125 * 10) = 31.25 → no floor applied
+    const rate1 = calculateModelCRate(10, defaultConfig);
+    expect(rate1).toBe(31. 25);
+
+    // Even shorter: 30 + (0.125 * -50) → 22.5, floored to 25
+    const rate2 = calculateModelCRate(-50, { ...defaultConfig, kmFactorZar: -0.125 });
+    expect(rate2).toBe(25);
+  });
+
+  it('should cap rate at maxRatePerParcelZar', () => {
+    // Very long route: 30 + (0.125 * 500) = 30 + 62.5 = 92.5 → capped to 80
+    const rate = calculateModelCRate(500, defaultConfig);
+    expect(rate). toBe(80);
+  });
+
+  it('should round to cents', () => {
+    const rate = calculateModelCRate(123.456, defaultConfig);
+    // 30 + (0.125 * 123.456) = 30 + 15.432 = 45.432 → 45.43
+    expect(rate).toBeCloseTo(45.43, 2);
+    expect(String(rate). split('.')[1]?. length).toBeLessThanOrEqual(2);
+  });
+});
+
+// ============================================================================
+// TEST SUITE 2: Guardrails
+// ============================================================================
+
+describe('Model C: applyGuardrails', () => {
+  it('should accept valid route', () => {
+    const result = applyGuardrails(baselineRequest, defaultConfig);
+    expect(result. status).toBe('ACCEPTED');
+  });
+
+  it('should reject route with too few stops', () => {
+    const req = { ...baselineRequest, parcelCount: 10 };
+    const result = applyGuardrails(req, defaultConfig);
+    expect(result.status).toBe('LOW_DENSITY');
+    expect(result.reason).toBe('INSUFFICIENT_STOPS');
+    expect(result.details?. deficit).toBe(15); // 25 - 10
+  });
+
+  it('should reject route with too many stops', () => {
+    const req = { ... baselineRequest, parcelCount: 50 };
+    const result = applyGuardrails(req, defaultConfig);
+    expect(result.status).toBe('LOW_DENSITY');
+    expect(result.reason).toBe('EXCESSIVE_STOPS');
+    expect(result.details?.excess).toBe(5); // 50 - 45
+  });
+
+  it('should reject route that is too far', () => {
+    const req = { ...baselineRequest, plannedDistanceKm: 250 };
+    const result = applyGuardrails(req, defaultConfig);
+    expect(result.status).toBe('TOO_FAR');
+    expect(result.reason).toBe('ROUTE_EXCEEDS_MAX_KM');
+  });
+
+  it('should reject route with km per stop too high', () => {
+    // 160 km / 20 stops = 8 km/stop (exceeds 7)
+    const req = { plannedDistanceKm: 160, parcelCount: 20, routeId: 'TEST', };
+    const result = applyGuardrails(req, defaultConfig);
+    expect(result.status).toBe('LOW_DENSITY');
+    expect(result.reason).toBe('KM_PER_STOP_TOO_HIGH');
+  });
+
+  it('should reject non-positive values', () => {
+    const req = { ... baselineRequest, plannedDistanceKm: -10 };
+    const result = applyGuardrails(req, defaultConfig);
+    expect(result.status).toBe('INVALID');
+    expect(result. reason).toBe('NON_POSITIVE_VALUES');
+  });
+
+  it('should reject zero parcel count', () => {
+    const req = { ...baselineRequest, parcelCount: 0 };
+    const result = applyGuardrails(req, defaultConfig);
+    expect(result. status).toBe('INVALID');
+  });
+});
+
+// ============================================================================
+// TEST SUITE 3: Full Quote Flow
+// ============================================================================
+
+describe('Model C: quoteRoute', () => {
+  it('should quote valid route successfully', () => {
+    const response = quoteRoute(baselineRequest, defaultConfig);
+
+    expect(response.status).toBe('ACCEPTED');
+    expect(response.modelVersion).toBe('MODEL_C_V1');
+    expect(response.currency).toBe('ZAR');
+    expect(response.ratePerParcel).toBeCloseTo(48.19, 2);
+    expect(response.totalPayout).toBeCloseTo(1542.08, 2); // 48.19 * 32
+  });
+
+  it('should reject route that fails guardrails', () => {
+    const req = { ...baselineRequest, parcelCount: 10 };
+    const response = quoteRoute(req, defaultConfig);
+
+    expect(response.status).toBe('REJECTED');
+    expect(response. guardrailStatus).toBe('LOW_DENSITY');
+    expect(response.ratePerParcel).toBe(0);
+    expect(response.totalPayout).toBe(0);
+  });
+
+  it('should include config snapshot in response', () => {
+    const response = quoteRoute(baselineRequest, defaultConfig);
+
+    expect(response.configSnapshot).toBeDefined();
+    expect(response.configSnapshot?. baseRateZar).toBe(30);
+    expect(response.configSnapshot?.kmFactorZar).toBe(0.125);
+  });
+});
+
+// ============================================================================
+// TEST SUITE 4: Variance Evaluation
+// ============================================================================
+
+describe('Model C: evaluateVariance', () => {
+  it('should OK variance within warn threshold (10%)', () => {
+    // Planned: 100 km, Actual: 105 km (5% variance)
+    const eval1 = evaluateVariance(100, 105, defaultConfig);
+    expect(eval1. status).toBe('OK');
+    expect(eval1.variancePct).toBe(5);
+    expect(eval1.recommendedAction).toBe('AUTO_APPROVE');
+
+    // Planned: 100 km, Actual: 110 km (10% variance - boundary)
+    const eval2 = evaluateVariance(100, 110, defaultConfig);
+    expect(eval2.status).toBe('OK');
+    expect(eval2.variancePct).toBe(10);
+  });
+
+  it('should WARN variance between thresholds (10-30%)', () => {
+    // Planned: 100 km, Actual: 120 km (20% variance)
+    const eval1 = evaluateVariance(100, 120, defaultConfig);
+    expect(eval1.status). toBe('WARN');
+    expect(eval1.variancePct).toBe(20);
+    expect(eval1.recommendedAction).toBe('REQUEST_OPS_REVIEW');
+
+    // Planned: 100 km, Actual: 115 km (15% variance)
+    const eval2 = evaluateVariance(100, 115, defaultConfig);
+    expect(eval2.status).toBe('WARN');
+  });
+
+  it('should HARD flag variance above 30%', () => {
+    // Planned: 100 km, Actual: 135 km (35% variance)
+    const eval1 = evaluateVariance(100, 135, defaultConfig);
+    expect(eval1.status).toBe('HARD');
+    expect(eval1.variancePct).toBe(35);
+    expect(eval1.recommendedAction).toBe('HOLD_FOR_MANUAL');
+
+    // Planned: 100 km, Actual: 130 km (30% variance - boundary)
+    const eval2 = evaluateVariance(100, 130, defaultConfig);
+    expect(eval2.status).toBe('HARD');
+  });
+
+  it('should handle negative variance (shorter actual)', () => {
+    // Planned: 100 km, Actual: 85 km (-15% variance - driver found shortcut)
+    const eval1 = evaluateVariance(100, 85, defaultConfig);
+    expect(eval1.variancePct).toBe(-15);
+    expect(eval1.status).toBe('WARN');
+
+    // Planned: 100 km, Actual: 95 km (-5% variance)
+    const eval2 = evaluateVariance(100, 95, defaultConfig);
+    expect(eval2.status).toBe('OK');
+  });
+
+  it('should handle zero/negative distances gracefully', () => {
+    const eval1 = evaluateVariance(0, 100, defaultConfig);
+    expect(eval1.status).toBe('OK');
+    expect(eval1.variancePct).toBe(0);
+
+    const eval2 = evaluateVariance(100, 0, defaultConfig);
+    expect(eval2.status).toBe('OK');
+  });
+});
+
+// ============================================================================
+// TEST SUITE 5: Integration (full journey)
+// ============================================================================
+
+describe('Model C: Integration Tests', () => {
+  it('should handle full route lifecycle', () => {
+    // 1. Quote route
+    const quote = quoteRoute(baselineRequest, defaultConfig);
+    expect(quote.status).toBe('ACCEPTED');
+
+    // 2.  Store quote in snapshot (simulated)
+    const snapshot = {
+      plannedKm: baselineRequest.plannedDistanceKm,
+      offeredAmount: quote.totalPayout,
+      lockedAt: new Date().toISOString(),
+    };
+
+    // 3. Driver completes route with 2% variance
+    const actualKm = baselineRequest.plannedDistanceKm * 1.02; // 148.41
+    const variance = evaluateVariance(
+      baselineRequest.plannedDistanceKm,
+      actualKm,
+      defaultConfig,
+    );
+
+    expect(variance.status).toBe('OK');
+    expect(variance. recommendedAction).toBe('AUTO_APPROVE');
+
+    // 4.  Payout amount should remain locked
+    expect(snapshot.offeredAmount).toBeCloseTo(1542.08, 2);
+  });
+
+  it('should flag suspicious 35% variance route', () => {
+    const quote = quoteRoute(baselineRequest, defaultConfig);
+    expect(quote.status).toBe('ACCEPTED');
+
+    // Actual is 35% longer (possible detour or gaming)
+    const actualKm = baselineRequest.plannedDistanceKm * 1.35; // 196.43
+    const variance = evaluateVariance(
+      baselineRequest. plannedDistanceKm,
+      actualKm,
+      defaultConfig,
+    );
+
+    expect(variance.status).toBe('HARD');
+    expect(variance.recommendedAction).toBe('HOLD_FOR_MANUAL');
+  });
+});
+
+// ============================================================================
+// PROPERTY-BASED TESTS (Fuzzing)
+// ============================================================================
+
+describe('Model C: Property-based Tests', () => {
+  it('should never calculate negative payout', () => {
+    for (let i = 0; i < 100; i++) {
+      const plannedKm = Math.random() * 500; // 0-500 km
+      const parcelCount = Math.floor(Math.random() * 60) + 20; // 20-80 stops
+
+      const req = { ...baselineRequest, plannedDistanceKm: plannedKm, parcelCount };
+      const response = quoteRoute(req, defaultConfig);
+
+      if (response.status === 'ACCEPTED') {
+        expect(response.totalPayout).toBeGreaterThanOrEqual(0);
+        expect(response.ratePerParcel).toBeGreaterThanOrEqual(defaultConfig.minRatePerParcelZar);
+        expect(response.ratePerParcel).toBeLessThanOrEqual(defaultConfig.maxRatePerParcelZar);
+      }
+    }
+  });
+
+  it('should maintain total payout = rate * parcel count', () => {
+    for (let i = 0; i < 50; i++) {
+      const plannedKm = Math.random() * 150;
+      const parcelCount = 30 + Math.floor(Math.random() * 15); // 30-45 stops
+
+      const req = { ...baselineRequest, plannedDistanceKm: plannedKm, parcelCount };
+      const response = quoteRoute(req, defaultConfig);
+
+      if (response.status === 'ACCEPTED') {
+        const calculated = response.ratePerParcel * parcelCount;
+        expect(Math.abs(response.totalPayout - calculated)).toBeLessThan(0.01);
+      }
+    }
+  });
+});

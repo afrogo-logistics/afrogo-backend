@@ -1,0 +1,119 @@
+# **AFROOGO RATE ENGINE – MODEL_C_V1 (Internal RFC)**
+
+**Status:** ACTIVE  
+**Owner:** CTO – AfroGo Engineering  
+**Last Updated:** 2025-11-29  
+**Scope:** Driver payout logic for Gauteng launch  
+**Audience:** All engineers, Finance, Operations
+
+---
+
+## 1. OVERVIEW
+
+The **Rate Engine** is AfroGo's domain subsystem responsible for calculating and reconciling driver payouts according to **Model C** (distance-adjusted compensation). 
+
+### Key Characteristics
+
+- **Deterministic**: Same input always yields same output. 
+- **Immutable**: Once a payout snapshot is created for a route offer, it **cannot** change.
+- **Auditable**: Every calculation is logged with config snapshot for compliance.
+- **Testable**: Pure functions with no IO; full property-based test coverage. 
+- **Transparent**: Drivers see exactly how their pay is calculated.
+
+### Non-Goals
+
+- Per-driver premium pricing (future: MODEL_C_V2). 
+- Weather/traffic adjustments (scope creep).
+- Retroactive payout recalculation (immutable by design). 
+
+---
+
+## 2. MODEL C DEFINITION
+
+### 2.1 Core Formula
+ratePerParcel = BASE_RATE_ZAR + KM_FACTOR_ZAR × plannedDistanceKm
+
+totalPayout = ratePerParcel × parcelCount
+
+(All values in ZAR; rounded to cents)
+
+### 2. 2 Gauteng Defaults (MODEL_C_V1)
+
+| Parameter | Value | Unit | Notes |
+|-----------|-------|------|-------|
+| `BASE_RATE_ZAR` | 30. 00 | ZAR/parcel | Fixed component |
+| `KM_FACTOR_ZAR` | 0.125 | ZAR/km | Variable component |
+| `MIN_RATE_PER_PARCEL_ZAR` | 25.00 | ZAR | Sanity floor |
+| `MAX_RATE_PER_PARCEL_ZAR` | 80.00 | ZAR | Sanity cap |
+
+### 2.3 Guardrail Constraints
+
+| Constraint | Min | Max | Purpose |
+|-----------|-----|-----|---------|
+| `minStops` | 25 | – | Density threshold (efficiency) |
+| `maxStops` | – | 45 | Vehicle capacity / legal limits |
+| `maxRouteKm` | – | 220 | Driver fatigue / fuel cost |
+| `maxKmPerStop` | – | 7 | Derived density check |
+
+### 2.4 Variance Thresholds
+
+| Range | Status | Action | Approval |
+|-------|--------|--------|----------|
+| ≤ 10% | OK | Auto-approve | System |
+| 10–30% | WARN | Ops review (soft) | System + Ops |
+| > 30% | HARD | Manual decision | Ops + CTO |
+
+---
+
+## 3. SYSTEM RESPONSIBILITIES
+
+### 3.1 Rate Engine (Core Module)
+
+**File:** `src/engine/modelc. ts`
+
+Pure functions (no IO):
+
+- `applyGuardrails(route, config)` → `GuardrailResult`
+- `calculateModelCRate(plannedKm, config)` → `number`
+- `quoteRoute(request, config)` → `RouteQuoteResponse`
+- `evaluateVariance(plannedKm, actualKm, config)` → `VarianceEvaluation`
+
+**Invariants:**
+- No payout is ever **negative**.
+- `totalPayout = ratePerParcel × parcelCount ± 0.01` (rounding tolerance). 
+- All rates bounded by `[minRate, maxRate]`.
+
+**Testing:**
+- Unit tests for all functions.
+- Property tests for rate bounds and totals.
+- Fuzz testing with random distance/stop counts.
+
+### 3.2 Quote Lambda
+
+**File:** `src/lambdas/quoteHandler.ts`
+
+Responsibilities:
+
+- Load config from SSM Parameter Store.
+- Validate HTTP request. 
+- Call `quoteRoute()` from core module.
+- Log audit trail to DynamoDB.
+- Emit CloudWatch metrics. 
+- Return `RouteQuoteResponse`.
+
+**SLA:** < 500ms p99
+
+**Error Handling:**
+- Invalid request → 400 Bad Request
+- Config load failure → 500 Internal Error (with retry)
+- Guardrail reject → 200 OK with `status: REJECTED`
+
+### 3.3 Finalize Lambda
+
+**File:** `src/lambdas/finalizePayoutComplete.ts`
+
+Responsibilities:
+
+- Load route + snapshot from DynamoDB (server truth).
+- Load config from SSM. 
+- Call `evaluateVariance()` with actual telemet

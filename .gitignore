@@ -1,0 +1,21 @@
+# Node
+node_modules/
+/.pnp/
+.pnp.js
+
+# Build
+dist/
+coverage/
+
+# Env
+.env
+env.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Mac/Windows
+.DS_Store
+Thumbs.db

@@ -1,0 +1,353 @@
+{
+  "info": {
+    "name": "AfroGoBackend v1 (Dev)",
+    "_postman_id": "afrogo-backend-v1-dev-collection",
+    "description": "Headless API collection for AfroGoBackend v1 (Dev environment). Includes War Games scenarios tests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+  { "key": "baseUrl", "value": "https://api-dev.afrogo.co.za/v1" },
+    { "key": "authToken", "value": "" },
+    { "key": "merchantId", "value": "" },
+    { "key": "parcelId_1", "value": "" },
+    { "key": "parcelId_2", "value": "" },
+    { "key": "parcelId_3", "value": "" },
+    { "key": "routeId", "value": "" },
+    { "key": "driverId", "value": "" },
+    { "key": "invoiceId", "value": "" },
+    { "key": "payoutId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Merchants",
+      "item": [
+        {
+          "name": "CreateMerchant",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/merchants", "host": ["{{baseUrl}}"], "path": ["merchants"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"TestMerchant -Soweto\",\n  \"legalName\": \"TestMerchantPtyLtd\",\n  \"contactEmail\": \"ops+merchant1@afrogo.co.za\",\n  \"contactPhone\": \"+27821234567\",\n  \"payoutBankAccount\": { \"bank\": \"FNB\", \"accountNumber\": \"123456789\", \"branchCode\": \"250655\" },\n  \"defaultPickupAddress\": { \"line1\": \"123 Vilakazi St\", \"city\": \"Soweto\", \"province\": \"Gauteng\", \"postalCode\": \"1804\" },\n  \"metadata\": { \"onboardingSource\": \"internal_uat\" }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 201 or 200\", function() {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200,201]);",
+                  "});",
+                  "try {",
+                  "  const body = pm.response.json();",
+                  "  if (body.merchantId) pm.environment.set('merchantId', body.merchantId);",
+                  "} catch (e) {}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "GetMerchant",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test(\"Status code 200\", function() { pm.response.to.have.status(200); });"], "type": "text/javascript" }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Parcels",
+      "item": [
+        {
+          "name": "CreateParcel",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/parcels", "host": ["{{baseUrl}}"], "path": ["parcels"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchantId\": \"{{merchantId}}\",\n  \"externalRef\": \"UAT-ORDER-{{randomInt}}\",\n  \"recipient\": { \"name\": \"Lerato\", \"phone\": \"+27831234567\" },\n  \"destination\": { \"line1\": \"456 Mzimhlophe\", \"city\": \"Soweto\", \"province\": \"Gauteng\", \"postalCode\": \"1804\", \"latitude\": -26.245, \"longitude\": 27.91 },\n  \"dimensions\": { \"weightKg\": 1.2, \"lengthCm\": 30, \"widthCm\": 20, \"heightCm\": 10 },\n  \"serviceLevel\": \"STANDARD\",\n  \"metadata\": { \"uatBatch\": \"batch-1\" }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": { "exec": ["pm.environment.set('randomInt', Math.floor(Math.random()*90000)+10000);"], "type": "text/javascript" }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status 201 or 200\", function() { pm.expect(pm.response.code).to.be.oneOf([200,201]); });",
+                  "try { const b = pm.response.json(); if (b.parcelId) { const key = pm.environment.get('nextParcelKey') || 'parcelId_1'; pm.environment.set(key, b.parcelId); } } catch(e) {}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "GetParcel",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/parcels/{{parcelId_1}}", "host": ["{{baseUrl}}"], "path": ["parcels", "{{parcelId_1}}"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "exec": ["pm.test(\"Status 200\", function() { pm.response.to.have.status(200); });"], "type": "text/javascript" } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Routing & RateEngine",
+      "item": [
+        {
+          "name": "GenerateRoutes (Batch)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/routing/routes:generate", "host": ["{{baseUrl}}"], "path": ["routing", "routes:generate"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"serviceDate\": \"2025-12-02\",\n  \"zoneId\": \"SOWETO_SOUTH\",\n  \"candidates\": [\n    {\n      \"zoneId\": \"SOWETO_SOUTH\",\n      \"plannedDistanceKm\": 180,\n      \"estimatedDurationMin\": 480,\n      \"parcels\": [\n        { \"parcelId\": \"{{parcelId_1}}\", \"lat\": -26.25, \"lon\": 27.91 }\n      ]\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+                  "try { const body = pm.response.json(); if (body.results && body.results.length) { pm.collectionVariables.set('routeId', body.results[0].routeId || ''); } } catch(e) {}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Quote Route (ModelC) - War Games Test",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/rate/quote-route", "host": ["{{baseUrl}}"], "path": ["rate", "quote-route"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"zoneId\": \"{{scenario1_zoneId}}\",\n  \"plannedDistanceKm\": {{scenario1_plannedDistanceKm}},\n  \"parcelCount\": {{scenario1_parcelCount}}\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Response has modelC block', function() { pm.expect(body).to.have.property('modelC'); pm.expect(body.modelC).to.have.property('perParcelPayout'); pm.expect(body.modelC).to.have.property('totalPayout'); });",
+                  "const base = Number(pm.environment.get('scenario1_baseRate') || 30);",
+                  "const perKm = Number(pm.environment.get('scenario1_perKmRate') || 0.125);",
+                  "const plannedKm = Number(pm.environment.get('scenario1_plannedDistanceKm') || 180);",
+                  "const parcelCount = Number(pm.environment.get('scenario1_parcelCount') || 35);",
+                  "const expectedPerParcel = base + perKm * plannedKm;",
+                  "const expectedTotal = expectedPerParcel * parcelCount;",
+                  "pm.test('ModelC per-parcel payout matches CFO formula', function() { const actual = Number(body.modelC.perParcelPayout); pm.expect(actual).to.be.closeTo(expectedPerParcel, 0.0001); });",
+                  "pm.test('ModelC total payout matches CFO formula', function() { const actualTotal = Number(body.modelC.totalPayout); pm.expect(actualTotal).to.be.closeTo(expectedTotal, 0.0001); });",
+                  "pm.collectionVariables.set('scenario1_expectedPerParcel', expectedPerParcel.toString());",
+                  "pm.collectionVariables.set('scenario1_expectedTotal', expectedTotal.toString());",
+                  "pm.collectionVariables.set('scenario1_actualTotal', String(body.modelC.totalPayout));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Driver Flows (VirtualDriver)",
+      "item": [
+        {
+          "name": "ListRouteOffers for Driver",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/drivers/{{driverId}}/route-offers?serviceDate=2025-12-02", "host": ["{{baseUrl}}"], "path": ["drivers", "{{driverId}}", "route-offers"], "query": [{ "key": "serviceDate", "value": "2025-12-02" }] }
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', function() { pm.response.to.have.status(200); });"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "AcceptRoute",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/drivers/{{driverId}}/routes/{{routeId}}/accept", "host": ["{{baseUrl}}"], "path": ["drivers", "{{driverId}}", "routes", "{{routeId}}", "accept"] },
+            "body": { "mode": "raw", "raw": "{\n  \"acceptedAt\": \"2025-12-02T07:55:00Z\",\n  \"deviceInfo\": { \"platform\": \"android\", \"appVersion\": \"0.1.0-uatauto\" }\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', function() { pm.response.to.have.status(200); });"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "ScanParcel at Stop",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/drivers/{{driverId}}/routes/{{routeId}}/scan", "host": ["{{baseUrl}}"], "path": ["drivers", "{{driverId}}", "routes", "{{routeId}}", "scan"] },
+            "body": { "mode": "raw", "raw": "{\n  \"parcelId\": \"{{parcelId_1}}\",\n  \"status\": \"DELIVERED\",\n  \"scannedAt\": \"2025-12-02T10:15:00Z\",\n  \"location\": { \"lat\": -26.2451, \"lon\": 27.9107, \"accuracyM\": 12 }\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', function() { pm.response.to.have.status(200); });"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "CompleteRoute (used by Scenario2 MileagePadder)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/drivers/{{driverId}}/routes/{{routeId}}/complete", "host": ["{{baseUrl}}"], "path": ["drivers", "{{driverId}}", "routes", "{{routeId}}", "complete"] },
+            "body": { "mode": "raw", "raw": "{\n  \"completedAt\": \"2025-12-02T16:05:00Z\",\n  \"odometerKm\": {{scenario2_actualDistanceKm}}\n}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() { pm.response.to.have.status(200); });",
+                  "try { const body = pm.response.json(); pm.collectionVariables.set('scenario2_completeRouteResponse', JSON.stringify(body)); } catch (e) {}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Payout Finalisation & Ledger",
+      "item": [
+        {
+          "name": "Finalize Payouts for ServiceDate (Scenario3 test)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/payouts/finalize", "host": ["{{baseUrl}}"], "path": ["payouts", "finalize"] },
+            "body": { "mode": "raw", "raw": "{\n  \"serviceDate\": \"{{scenario3_serviceDate}}\",\n  \"zoneId\": \"{{scenario3_zoneId}}\"\n}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const status = pm.response.code;",
+                  "pm.test('Finalizereturns a business error (not 2xx)', function() { pm.expect(status).to.be.oneOf([400,409,422]); });",
+                  "let body = {}; try { body = pm.response.json(); } catch(e) {}",
+                  "pm.test('Error payload indicates unreconciled inventory', function() { const msg = (body.error || body.message || '').toUpperCase(); pm.expect(msg).to.include('UNRECONCILED'); });",
+                  "pm.collectionVariables.set('scenario3_finalizeErrorPayload', JSON.stringify(body));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Billing & MerchantLedger",
+      "item": [
+        {
+          "name": "GenerateInvoice",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/billing/invoices", "host": ["{{baseUrl}}"], "path": ["billing", "invoices"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchantId\": \"{{merchantId}}\",\n  \"dueDate\": \"2025-12-10\",\n  \"currency\": \"ZAR\",\n  \"customerEmail\": \"billing+merchant1@afrogo.co.za\",\n  \"customerName\": \"TestMerchantFinance\",\n  \"items\": [ { \"description\": \"AfroGoDeliveries-Week1\", \"qty\": 50, \"unitPrice\": 25.5 } ],\n  \"metadata\": { \"period\": \"2025-W01\", \"uat\": true }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201 or 200', function() { pm.expect(pm.response.code).to.be.oneOf([200,201]); });",
+                  "try { const b = pm.response.json(); if (b.invoiceId) pm.environment.set('invoiceId', b.invoiceId); } catch(e) {}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "GetInvoice",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/billing/invoices/{{invoiceId}}", "host": ["{{baseUrl}}"], "path": ["billing", "invoices", "{{invoiceId}}"] }
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', function() { pm.response.to.have.status(200); });"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "PaymentWebhook Simulation",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/billing/payment-webhook", "host": ["{{baseUrl}}"], "path": ["billing", "payment-webhook"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoiceId\": \"{{invoiceId}}\",\n  \"status\": \"paid\",\n  \"amount\": 1275.00,\n  \"providerReference\": \"MPESA-UAT-REF-12345\",\n  \"signature\": \"PLACEHOLDER_SIGNATURE\",\n  \"data\": { \"provider\": \"mpesa\", \"transactionId\": \"TX-12345\" }\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', function() { pm.response.to.have.status(200); });"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "ReconcilePendingPayments",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/billing/reconcile-pending", "host": ["{{baseUrl}}"], "path": ["billing", "reconcile-pending"] },
+            "body": { "mode": "raw", "raw": "{}" }
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', function() { pm.response.to.have.status(200); });"], "type": "text/javascript" } }]
+        }
+      ]
+    },
+    {
+      "name": "Ops / Variance Review",
+      "item": [
+        {
+          "name": "ListPendingPayouts",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/ops/payouts/pending-review?limit=50", "host": ["{{baseUrl}}"], "path": ["ops", "payouts", "pending-review"], "query": [{ "key": "limit", "value": "50" }] }
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', function() { pm.response.to.have.status(200); });"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "ApprovePayout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/ops/payouts/{{payoutId}}/approve", "host": ["{{baseUrl}}"], "path": ["ops", "payouts", "{{payoutId}}", "approve"] },
+            "body": { "mode": "raw", "raw": "{\n  \"note\": \"UAT variance verified, approve.\",\n  \"approver\": \"abel.cto@afrogo.co.za\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', function() { pm.response.to.have.status(200); });"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "TopupPayout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/ops/payouts/{{payoutId}}/topup", "host": ["{{baseUrl}}"], "path": ["ops", "payouts", "{{payoutId}}", "topup"] },
+            "body": { "mode": "raw", "raw": "{\n  \"topupAmount\": 75.00,\n  \"note\": \"Exceptional traffic delay\",\n  \"approver\": \"abel.cto@afrogo.co.za\",\n  \"idempotencyKey\": \"UAT-TOPUP-{{payoutId}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status 200', function() { pm.response.to.have.status(200); });"], "type": "text/javascript" } }]
+        }
+      ]
+    }
+  ]
+}

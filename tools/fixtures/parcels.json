@@ -1,0 +1,47 @@
+[
+  {
+    "merchantId": "MERCHANT_UAT_1",
+    "externalRef": "UAT-ORDER-001",
+    "recipient": { "name": "Lerato", "phone": "+27831230001" },
+    "destination": { "line1": "10 Main St", "city": "Soweto", "province": "Gauteng", "postalCode": "1804", "latitude": -26.245, "longitude": 27.91 },
+    "dimensions": { "weightKg": 1.0 },
+    "serviceLevel": "STANDARD",
+    "metadata": { "uatBatch": "batch-1" }
+  },
+  {
+    "merchantId": "MERCHANT_UAT_1",
+    "externalRef": "UAT-ORDER-002",
+    "recipient": { "name": "Thabo", "phone": "+27831230002" },
+    "destination": { "line1": "20 Market St", "city": "Soweto", "province": "Gauteng", "postalCode": "1804", "latitude": -26.246, "longitude": 27.911 },
+    "dimensions": { "weightKg": 0.8 },
+    "serviceLevel": "STANDARD",
+    "metadata": { "uatBatch": "batch-1" }
+  },
+  {
+    "merchantId": "MERCHANT_UAT_1",
+    "externalRef": "UAT-ORDER-003",
+    "recipient": { "name": "Zanele", "phone": "+27831230003" },
+    "destination": { "line1": "30 Church Rd", "city": "Soweto", "province": "Gauteng", "postalCode": "1804", "latitude": -26.247, "longitude": 27.912 },
+    "dimensions": { "weightKg": 1.2 },
+    "serviceLevel": "STANDARD",
+    "metadata": { "uatBatch": "batch-1" }
+  },
+  {
+    "merchantId": "MERCHANT_UAT_1",
+    "externalRef": "UAT-ORDER-004",
+    "recipient": { "name": "Sipho", "phone": "+27831230004" },
+    "destination": { "line1": "40 Market St", "city": "Soweto", "province": "Gauteng", "postalCode": "1804", "latitude": -26.248, "longitude": 27.913 },
+    "dimensions": { "weightKg": 2.0 },
+    "serviceLevel": "STANDARD",
+    "metadata": { "uatBatch": "batch-1" }
+  },
+  {
+    "merchantId": "MERCHANT_UAT_1",
+    "externalRef": "UAT-ORDER-005",
+    "recipient": { "name": "Mpho", "phone": "+27831230005" },
+    "destination": { "line1": "50 River Rd", "city": "Soweto", "province": "Gauteng", "postalCode": "1804", "latitude": -26.249, "longitude": 27.914 },
+    "dimensions": { "weightKg": 1.5 },
+    "serviceLevel": "STANDARD",
+    "metadata": { "uatBatch": "batch-1" }
+  }
+]

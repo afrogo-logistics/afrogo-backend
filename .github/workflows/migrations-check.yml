@@ -1,0 +1,59 @@
+name: Validate Migrations
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: {}
+
+jobs:
+  migrations-check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 2s --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for Postgres to be ready
+        run: |
+          echo "Waiting for Postgres..."
+          for i in {1..20}; do
+            node -e "const {Client}=require('pg');(async()=>{try{const c=new Client({host:'localhost',port:5432,user:'postgres',password:'postgres',database:'postgres'});await c.connect();await c.end();console.log('connected');process.exit(0);}catch(e){process.exit(1)}})()" && break || sleep 3
+          done
+
+      - name: Run migration runner (CI validation)
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: postgres
+        run: node services/billing-service/tools/migrate-runner.js --dry-run
+
+      - name: Apply migrations (smoke)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: postgres
+        run: node services/billing-service/tools/migrate-runner.js

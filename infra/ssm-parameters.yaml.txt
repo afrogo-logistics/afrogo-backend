@@ -1,0 +1,121 @@
+/**
+ * AWS SSM PARAMETER STORE - Rate Engine Configuration
+ * 
+ * Deploy with:
+ *   aws ssm put-parameter --name /afrogo/...  --value X --type String --overwrite
+ * 
+ * All parameters are non-encrypted (cheap) but could be Secure Strings.
+ * 
+ * Version: 1.0.0
+ * Last Updated: 2025-11-30
+ */
+
+Parameters:
+
+  # ========================================================================
+  # MODEL C RATES (ZAR)
+  # ========================================================================
+
+  /afrogo/rate-engine/base-rate-zar:
+    Type: String
+    Value: "30. 00"
+    Description: "Base fixed rate per parcel (ZAR)"
+    Tags:
+      - Key: Service
+        Value: rate-engine
+      - Key: Tier
+        Value: critical
+
+  /afrogo/rate-engine/km-factor-zar:
+    Type: String
+    Value: "0.125"
+    Description: "Variable rate per km (ZAR/km)"
+    Tags:
+      - Key: Service
+        Value: rate-engine
+      - Key: Tier
+        Value: critical
+
+  # ========================================================================
+  # GUARDRAIL CONSTRAINTS
+  # ========================================================================
+
+  /afrogo/rate-engine/min-stops:
+    Type: String
+    Value: "25"
+    Description: "Minimum parcels required in a route (efficiency)"
+    Tags:
+      - Key: Service
+        Value: rate-engine
+
+  /afrogo/rate-engine/max-stops:
+    Type: String
+    Value: "45"
+    Description: "Maximum parcels allowed in a route (vehicle capacity)"
+    Tags:
+      - Key: Service
+        Value: rate-engine
+
+  /afrogo/rate-engine/max-route-km:
+    Type: String
+    Value: "220"
+    Description: "Maximum total distance for a route (driver fatigue, fuel)"
+    Tags:
+      - Key: Service
+        Value: rate-engine
+
+  /afrogo/rate-engine/max-km-per-stop:
+    Type: String
+    Value: "7"
+    Description: "Maximum distance per individual stop (density check)"
+    Tags:
+      - Key: Service
+        Value: rate-engine
+
+  # ========================================================================
+  # RATE BOUNDS (Sanity checks)
+  # ========================================================================
+
+  /afrogo/rate-engine/min-rate-per-parcel-zar:
+    Type: String
+    Value: "25"
+    Description: "Floor: if formula produces lower, use this"
+    Tags:
+      - Key: Service
+        Value: rate-engine
+
+  /afrogo/rate-engine/max-rate-per-parcel-zar:
+    Type: String
+    Value: "80"
+    Description: "Ceiling: if formula produces higher, cap at this"
+    Tags:
+      - Key: Service
+        Value: rate-engine
+
+  # ========================================================================
+  # VARIANCE THRESHOLDS (Post-delivery)
+  # ========================================================================
+
+  /afrogo/rate-engine/variance-warn-pct:
+    Type: String
+    Value: "10"
+    Description: "Variance above this triggers ops review (but auto-approve)"
+    Tags:
+      - Key: Service
+        Value: rate-engine
+
+  /afrogo/rate-engine/variance-hard-pct:
+    Type: String
+    Value: "30"
+    Description: "Variance above this requires manual decision"
+    Tags:
+      - Key: Service
+        Value: rate-engine
+
+  # ========================================================================
+  # MODEL VERSIONING
+  # ========================================================================
+
+  /afrogo/rate-engine/model-version:
+    Type: String
+    Value: "MODEL_C_V1"

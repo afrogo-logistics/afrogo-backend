@@ -1,0 +1,234 @@
+# AFROOGO COMPLETE BACKEND - SERVERLESS FRAMEWORK
+# Production-ready deployment configuration
+
+service: afroogo-backend
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: af-south-1
+  stage: ${opt:stage, 'prod'}
+  
+  environment:
+    STAGE: ${self:provider.stage}
+    REGION: ${self:provider.region}
+    MERCHANTS_TABLE: Merchants
+    DRIVERS_TABLE: Drivers
+    PARCELS_TABLE: Parcels
+    ROUTES_TABLE: Routes
+    DB_SECRET_ARN: arn:aws:secretsmanager:af-south-1:ACCOUNT:secret:afroogo-rds
+    RATE_ENGINE_API_SECRET_ARN: arn:aws:secretsmanager:af-south-1:ACCOUNT:secret:rate-engine-key
+    COGNITO_USER_POOL_ID: !Ref AfroGoUserPool
+    
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:*
+      Resource: arn:aws:dynamodb:af-south-1:ACCOUNT:table/*
+    - Effect: Allow
+      Action:
+        - rds:*
+      Resource: arn:aws:rds:af-south-1:ACCOUNT:cluster/*
+    - Effect: Allow
+      Action:
+        - s3:*
+      Resource: arn:aws:s3:::afroogo-*
+    - Effect: Allow
+      Action:
+        - sqs:*
+      Resource: arn:aws:sqs:af-south-1:ACCOUNT:afroogo-*
+    - Effect: Allow
+      Action:
+        - sns:*
+      Resource: arn:aws:sns:af-south-1:ACCOUNT:afroogo-*
+    - Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource: arn:aws:secretsmanager:af-south-1:ACCOUNT:secret:afroogo-*
+    - Effect: Allow
+      Action:
+        - cloudwatch:PutMetricData
+      Resource: '*'
+    - Effect: Allow
+      Action:
+        - logs:CreateLogGroup
+        - logs:CreateLogStream
+        - logs:PutLogEvents
+      Resource: arn:aws:logs:af-south-1:ACCOUNT:log-group:/aws/lambda/*
+
+functions:
+  # MERCHANT SERVICE
+  merchantRegister:
+    handler: services/merchant-service/dist/handlers. registerMerchant
+    events:
+      - http:
+          path: /merchant/register
+          method: post
+          cors: true
+    
+  getMerchant:
+    handler: services/merchant-service/dist/handlers.getMerchant
+    events:
+      - http:
+          path: /merchant/{merchantId}
+          method: get
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            identitySource: method.request.header.Authorization
+            userPoolArn: arn:aws:cognito-idp:af-south-1:ACCOUNT:userpool/POOL_ID
+
+  # DRIVER SERVICE
+  driverRegister:
+    handler: services/driver-service/dist/handlers.registerDriver
+    events:
+      - http:
+          path: /driver/register
+          method: post
+          cors: true
+    
+  getDriver:
+    handler: services/driver-service/dist/handlers.getDriver
+    events:
+      - http:
+          path: /driver/{driverId}
+          method: get
+          cors: true
+
+  updateDriverLocation:
+    handler: services/driver-service/dist/handlers.updateDriverLocation
+    events:
+      - http:
+          path: /driver/{driverId}/location
+          method: post
+          cors: true
+
+  # PARCEL SERVICE
+  createParcel:
+    handler: services/parcel-service/dist/handlers.createParcel
+    events:
+      - http:
+          path: /parcel/create
+          method: post
+          cors: true
+      - sqs:
+          arn: arn:aws:sqs:af-south-1:ACCOUNT:afroogo-parcel-creation
+          batchSize: 10
+
+  getParcelTracking:
+    handler: services/parcel-service/dist/handlers.getParcelTracking
+    events:
+      - http:
+          path: /tracking/{parcelId}
+          method: get
+          cors: true
+
+  # RATE ENGINE
+  rateEngineQuote:
+    handler: services/rate-engine/dist/lambdas/quoteHandler. handler
+    events:
+      - http:
+          path: /internal/rate-engine/quote-route
+          method: post
+          cors: false
+    reservedConcurrency: 100
+
+  rateEngineFinalize:
+    handler: services/rate-engine/dist/lambdas/finalizePayoutComplete.handler
+    events:
+      - http:
+          path: /internal/rate-engine/finalize
+          method: post
+          cors: false
+
+  # ROUTING SERVICE
+  generateRoutes:
+    handler: services/routing-service/dist/handlers.generateRoutes
+    timeout: 120
+    memorySize: 1024
+    events:
+      - schedule:
+          rate: cron(30 6 * * ?  *)  # 06:30 UTC+2 daily
+          description: Daily batch route generation
+
+  # NOTIFICATION SERVICE
+  processNotifications:
+    handler: services/notification-service/dist/handlers.processNotifications
+    events:
+      - sqs:
+          arn: arn:aws:sqs:af-south-1:ACCOUNT:afroogo-notifications
+          batchSize: 20
+
+  # ANALYTICS SERVICE
+  processAnalytics:
+    handler: services/analytics-service/dist/handlers.processAnalyticsEvent
+    events:
+      - sqs:
+          arn: arn:aws:sqs:af-south-1:ACCOUNT:afroogo-analytics
+          batchSize: 100
+
+  # INTEGRATION SERVICE
+  shopifyWebhook:
+    handler: services/integration-service/dist/handlers.shopifyWebhookHandler
+    events:
+      - http:
+          path: /webhooks/shopify
+          method: post
+          cors: true
+
+  woocommerceWebhook:
+    handler: services/integration-service/dist/handlers.woocommerceWebhookHandler
+    events:
+      - http:
+          path: /webhooks/woocommerce
+          method: post
+          cors: true
+
+  # SUPPORT SERVICE
+  createTicket:
+    handler: services/support-service/dist/handlers. createTicket
+    events:
+      - http:
+          path: /support/ticket
+          method: post
+          cors: true
+
+  # ADMIN SERVICE
+  systemHealth:
+    handler: services/admin-service/dist/handlers.getSystemHealth
+    events:
+      - http:
+          path: /admin/health
+          method: get
+          cors: false
+
+resources:
+  Resources:
+    AfroGoUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: AfroGo-UserPool
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 12
+            RequireUppercase: true
+            RequireLowercase: true
+            RequireNumbers: true
+            RequireSymbols: true
+
+plugins:
+  - serverless-plugin-tracing
+  - serverless-dynamodb-local
+  - serverless-offline
+
+custom:
+  dynamodb:
+    stages:
+      - dev
+    start:
+      port: 8000
+      inMemory: true
+  offline:
+    httpPort: 3000

@@ -1,0 +1,232 @@
+# **AFROOGO RATE ENGINE – PRODUCTION DEPLOYMENT CHECKLIST**
+
+**Status:** Final Review (Ship Tomorrow)  
+**Last Updated:** 2025-11-29
+
+---
+
+## PRE-DEPLOYMENT
+
+### Security
+
+- [ ] **API Key Management**
+  - [ ] Rate Engine API key stored in AWS Secrets Manager (not env vars)
+  - [ ] Routing Service retrieves key from Secrets on first use, caches in memory
+  - [ ] Rate Engine endpoint behind VPC endpoint / private ALB (not internet-facing)
+  - [ ] mTLS certificates provisioned (optional but recommended)
+
+- [ ] **Database Credentials**
+  - [ ] Aurora credentials in Secrets Manager
+  - [ ] Lambda IAM role has `secretsmanager:GetSecretValue` for DB secret only
+  - [ ] No hardcoded credentials anywhere
+
+- [ ] **IAM Roles & Policies**
+  - [ ] Quote Lambda: SSM read-only + DynamoDB PutItem (audit table)
+  - [ ] Finalize Lambda: DynamoDB GetItem + UpdateItem (Routes) + RDS connect + CloudWatch PutMetricData
+  - [ ] Routing Service: DynamoDB PutItem (Routes) + Rate Engine API call + SQS send (ops queue)
+  - [ ] Driver Service: DynamoDB Query (Routes) + read-only
+  - [ ] Ops Service: RDS read/write (driver_payouts)
+
+- [ ] **Encryption**
+  - [ ] DynamoDB encryption at rest (AWS-managed or CMK)
+  - [ ] Aurora encryption at rest (AWS-managed or CMK)
+  - [ ] TLS 1.3 for all API calls
+  - [ ] Secrets Manager encryption enabled
+
+### Infrastructure
+
+- [ ] **DynamoDB**
+  - [ ] Routes table created with correct schema
+  - [ ] GSI: StatusIndex, DriverIndex, DateIndex
+  - [ ] TTL enabled on `expiresAt` field
+  - [ ] On-demand billing mode (or provisioned with autoscaling)
+  - [ ] Point-in-time recovery enabled
+  - [ ] Backups scheduled (daily)
+
+- [ ] **Aurora PostgreSQL**
+  - [ ] `driver_payouts` table created with correct schema
+  - [ ] Indexes: driver_id + created_at, status, variance_pct, finalized_at
+  - [ ] Read replicas in af-south-1 (for DR)
+  - [ ] Automated backups (7 days retention)
+  - [ ] Enhanced monitoring enabled
+  - [ ] Encryption at rest
+
+- [ ] **Lambda Functions**
+  - [ ] Quote handler deployed to `afroogo-rate-engine-quote`
+  - [ ] Finalize handler deployed to `afroogo-rate-engine-finalize`
+  - [ ] Memory: 512 MB (sufficient for JSON parsing + DB calls)
+  - [ ] Timeout: 30s (quote), 60s (finalize)
+  - [ ] Ephemeral storage: default (512 MB)
+  - [ ] VPC: connect if private endpoint required
+  - [ ] Environment variables set (ROUTES_TABLE_NAME, DB_SECRET_ARN, etc.)
+  - [ ] Reserved concurrency: 100 (to prevent throttling)
+
+- [ ] **SSM Parameter Store**
+  - [ ] `/afrogo/rate-engine/base-rate-zar` = `30. 00`
+  - [ ] `/afrogo/rate-engine/km-factor-zar` = `0. 125`
+  - [ ] All other config parameters loaded
+  - [ ] Parameter policy: Ops team read-only, CTO write
+  - [ ] Change notifications: SNS topic for config updates
+
+- [ ] **API Gateway (internal)**
+  - [ ] VPC endpoint configured (if using private ALB)
+  - [ ] Authorizer: IAM (for service-to-service) or custom Lambda
+  - [ ] Throttling: 1000 req/min per API key
+  - [ ] CORS: restricted to internal origins only
+  - [ ] Logging: CloudWatch logs enabled
+  - [ ] X-Ray tracing enabled
+
+- [ ] **CloudWatch**
+  - [ ] Log groups created: `/aws/lambda/afroogo-rate-engine-*`
+  - [ ] Log retention: 30 days
+  - [ ] Metric alarms:
+    - [ ] Quote errors > 5/min → page on-call
+    - [ ] Finalize errors > 5/min → page on-call
+    - [ ] DB connection failures → alert
+    - [ ] API latency p99 > 500ms → alert
+  - [ ] Dashboard: Rate Engine metrics visible
+
+### Code & Testing
+
+- [ ] **Unit Tests**
+  - [ ] `npm test` passes (all unit tests)
+  - [ ] Code coverage > 90% for engine module
+  - [ ] Property-based tests pass (fuzz testing)
+
+- [ ] **Integration Tests**
+  - [ ] Mock Rate Engine + Routing Service flow tested
+  - [ ] Mock finalize flow (DynamoDB → Aurora → update) tested
+  - [ ] Error cases tested (missing input, DB failures, etc.)
+
+- [ ] **Linting & Formatting**
+  - [ ] `npm run lint` passes (eslint)
+  - [ ] `npm run format` applied (prettier)
+  - [ ] Type checking: `tsc --noEmit` passes
+  - [ ] No secrets leaked (git-secrets, truffleHog)
+
+### Documentation
+
+- [ ] **RFC**
+  - [ ] MODEL_C_V1 RFC finalized and shared
+  - [ ] Invariants documented ("Do Not Break" rules)
+  - [ ] Version upgrade process documented (→ MODEL_C_V2)
+
+- [ ] **API Documentation**
+  - [ ] OpenAPI spec generated & published
+  - [ ] Quote endpoint documented
+  - [ ] Finalize endpoint documented
+  - [ ] Error codes documented
+
+- [ ] **Runbooks**
+  - [ ] On-call runbook for quote failures
+  - [ ] On-call runbook for finalize failures
+  - [ ] Config update procedure (SSM → test → deploy)
+  - [ ] Incident response procedure
+
+---
+
+## DEPLOYMENT
+
+### Stage 1: Staging Environment
+
+- [ ] Deploy to `afroogo-staging` VPC
+- [ ] Run smoke tests (Routing → quote → Routes → finalize)
+- [ ] Load test: 100 RPS for 5 minutes
+- [ ] Verify metrics & alarms firing correctly
+- [ ] Verify Secrets Manager access works
+- [ ] Run 24-hour soak test
+- [ ] **Sign-off: CTO + DevOps**
+
+### Stage 2: Production Canary (10% traffic)
+
+- [ ] Deploy to `afroogo-production` VPC
+- [ ] Use API Gateway canary deployment (10% traffic to new version)
+- [ ] Monitor for errors, latency, variance anomalies
+- [ ] Duration: 1 hour minimum
+- [ ] Rollback procedure ready
+- [ ] **Sign-off: CTO + Ops**
+
+### Stage 3: Production Full (100% traffic)
+
+- [ ] Promote canary to 100% if no errors
+- [ ] Monitor for 4 hours continuously
+- [ ] Alert: email CTO + on-call if any anomalies
+- [ ] **Sign-off: CTO**
+
+### Post-Deployment
+
+- [ ] Verify all metrics populated (CloudWatch dashboard live)
+- [ ] First route quoted successfully
+- [ ] First payout finalized successfully
+- [ ] Variance evaluation working (review a few in Ops dashboard)
+- [ ] Driver app showing earnings correctly
+- [ ] Finance team verifying ledger entries
+- [ ] **Sign-off: CTO + CFO + Ops Lead**
+
+---
+
+## ONGOING MONITORING
+
+### Daily
+
+- [ ] CloudWatch dashboard: Quote/finalize success rate > 99%
+- [ ] Payout ledger: New entries appearing in Aurora
+- [ ] Driver app: Earnings displays correct (spot check 5 drivers)
+- [ ] Variance distribution: Most routes < 10% variance (normal)
+
+### Weekly
+
+- [ ] Review high-variance routes (Ops dashboard)
+- [ ] Check for any SQL errors in Aurora logs
+- [ ] Verify SSM config hasn't drifted
+- [ ] Review Lambda cold start times
+
+### Monthly
+
+- [ ] Full audit log review (any anomalies?)
+- [ ] Model C formula validation (spot-check 10 routes)
+- [ ] Unit economics report: payout vs revenue
+- [ ] Capacity planning: do we need bigger Lambda/DB?
+
+---
+
+## INCIDENT RESPONSE
+
+### Quote Handler Down
+
+1. Check CloudWatch logs for error pattern
+2. Verify SSM config is accessible
+3. Check Rate Engine Lambda IAM role
+4. Rollback to previous version (1-click via API Gateway)
+5. If persistent: disable Routing batch, alert CTO
+
+### Finalize Handler Down
+
+1. Check CloudWatch logs
+2. Verify Aurora connection string in Secrets Manager
+3. Check RDS security group rules
+4. Payouts will be ON_HOLD pending manual review (safe state)
+5. Once fixed, manual approval in Ops dashboard
+
+### High Variance Spike
+
+1. Check if there were road closures / protests
+2. Ops team reviews flagged routes in dashboard
+3. If legitimate: apply topup
+4. If suspicious: investigate driver behavior
+
+---
+
+## SUCCESS CRITERIA
+
+- [ ] 99.9% uptime for quote handler
+- [ ] 99.5% uptime for finalize handler
+- [ ] p99 latency < 500ms (quote), < 1000ms (finalize)
+- [ ] Zero payout discrepancies (audit trail 100% accurate)
+- [ ] All drivers paid on time (weekly reconciliation)
+- [ ] CFO happy with ledger accuracy
+- [ ] No escalations from Finance or Ops for 2 weeks
+
+---
+
+**🚀 Ready to ship! **

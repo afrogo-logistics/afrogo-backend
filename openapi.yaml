@@ -1,0 +1,729 @@
+openapi: 3.0.3
+info:
+  title: AfroGoBackend API
+  version: "1.0.0"
+  description: >
+    AfroGoBackend v1 - Headless API for logistics, routing, payouts, billing,
+    and ops variance review. Use this OpenAPI skeleton as the contract for v1.
+servers:
+  - url: https://api-dev.afrogo.co.za/v1
+    description: Dev
+paths:
+  /merchants:
+    post:
+      tags: [Merchants]
+      summary: Create merchant
+      operationId: createMerchant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMerchantRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Merchant'
+  /merchants/{merchantId}:
+    get:
+      tags: [Merchants]
+      summary: Get merchant
+      operationId: getMerchant
+      parameters:
+        - in: path
+          name: merchantId
+          schema:
+            type: string
+          required: true
+      responses:
+        '200':
+          description: Merchant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Merchant'
+        '404':
+          description: Not found
+  /parcels:
+    post:
+      tags: [Parcels]
+      summary: Create parcel
+      operationId: createParcel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateParcelRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Parcel'
+  /parcels/{parcelId}:
+    get:
+      tags: [Parcels]
+      summary: Get parcel
+      operationId: getParcel
+      parameters:
+        - in: path
+          name: parcelId
+          schema:
+            type: string
+          required: true
+      responses:
+        '200':
+          description: Parcel
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Parcel'
+        '404':
+          description: Not found
+  /routing/routes:generate:
+    post:
+      tags: [Routing]
+      summary: Generate delivery routes for a service date
+      operationId: generateRoutes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateRoutesRequest'
+      responses:
+        '200':
+          description: Routes generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateRoutesResponse'
+  /rate/quote-route:
+    post:
+      tags: [Routing, RateEngine]
+      summary: Quote a route payout using Model C
+      operationId: quoteRoute
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                zoneId:
+                  type: string
+                plannedDistanceKm:
+                  type: number
+                parcelCount:
+                  type: integer
+      responses:
+        '200':
+          description: Quote returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  modelC:
+                    type: object
+                    properties:
+                      base:
+                        type: number
+                      perKm:
+                        type: number
+                      perParcelPayout:
+                        type: number
+                      totalPayout:
+                        type: number
+                  parcelCount:
+                    type: integer
+                  plannedDistanceKm:
+                    type: number
+  /drivers/{driverId}/route-offers:
+    get:
+      tags: [Drivers, Routing]
+      summary: List route offers for a driver
+      operationId: listRouteOffers
+      parameters:
+        - in: path
+          name: driverId
+          schema:
+            type: string
+          required: true
+        - in: query
+          name: serviceDate
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Route offers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Route'
+  /drivers/{driverId}/routes/{routeId}/accept:
+    post:
+      tags: [Drivers, Routing]
+      summary: Driver accepts a route
+      operationId: acceptRoute
+      parameters:
+        - in: path
+          name: driverId
+          schema:
+            type: string
+          required: true
+        - in: path
+          name: routeId
+          schema:
+            type: string
+          required: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcceptRouteRequest'
+      responses:
+        '200':
+          description: Route accepted
+  /drivers/{driverId}/routes/{routeId}/scan:
+    post:
+      tags: [Drivers]
+      summary: Driver scans parcel at stop
+      operationId: driverScan
+      parameters:
+        - in: path
+          name: driverId
+          schema:
+            type: string
+          required: true
+        - in: path
+          name: routeId
+          schema:
+            type: string
+          required: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverScanRequest'
+      responses:
+        '200':
+          description: Scan recorded
+  /drivers/{driverId}/routes/{routeId}/complete:
+    post:
+      tags: [Drivers]
+      summary: Driver completes route
+      operationId: completeRoute
+      parameters:
+        - in: path
+          name: driverId
+          schema:
+            type: string
+          required: true
+        - in: path
+          name: routeId
+          schema:
+            type: string
+          required: true
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                completedAt:
+                  type: string
+                  format: date-time
+                odometerKm:
+                  type: number
+      responses:
+        '200':
+          description: Route completed
+  /payouts/finalize:
+    post:
+      tags: [Payouts]
+      summary: Finalize payouts for a service date
+      operationId: finalizePayouts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                serviceDate:
+                  type: string
+                  format: date
+                zoneId:
+                  type: string
+      responses:
+        '200':
+          description: Payouts finalized
+        '409':
+          description: Conflict - unreconciled inventory
+  /drivers/{driverId}/earnings:
+    get:
+      tags: [Payouts, Drivers]
+      summary: Get driver earnings history
+      operationId: getDriverEarnings
+      parameters:
+        - in: path
+          name: driverId
+          schema:
+            type: string
+          required: true
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Earnings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverEarningsResponse'
+  /billing/invoices:
+    post:
+      tags: [Billing]
+      summary: Generate invoice
+      operationId: generateInvoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvoiceRequest'
+      responses:
+        '201':
+          description: Invoice created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceSummary'
+  /billing/invoices/{invoiceId}:
+    get:
+      tags: [Billing]
+      summary: Get invoice metadata
+      operationId: getInvoice
+      parameters:
+        - in: path
+          name: invoiceId
+          schema:
+            type: string
+          required: true
+      responses:
+        '200':
+          description: Invoice
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '404':
+          description: Not found
+  /billing/payment-webhook:
+    post:
+      tags: [Billing]
+      summary: Payment provider webhook
+      operationId: paymentWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentWebhookPayload'
+      responses:
+        '200':
+          description: Processed
+        '401':
+          description: Signature invalid
+  /billing/reconcile-pending:
+    post:
+      tags: [Billing]
+      summary: Reconcile pending payments against provider
+      operationId: reconcilePendingPayments
+      responses:
+        '200':
+          description: Reconciler result
+  /ops/payouts/pending-review:
+    get:
+      tags: [Ops, Payouts]
+      summary: List payouts pending review
+      operationId: listPendingPayouts
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        '200':
+          description: Pending payouts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DriverPayout'
+  /ops/payouts/{payoutId}/approve:
+    post:
+      tags: [Ops, Payouts]
+      summary: Approve payout
+      operationId: approvePayout
+      parameters:
+        - in: path
+          name: payoutId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note:
+                  type: string
+                approver:
+                  type: string
+      responses:
+        '200':
+          description: Approved
+  /ops/payouts/{payoutId}/topup:
+    post:
+      tags: [Ops, Payouts]
+      summary: Apply topup to payout
+      operationId: topupPayout
+      parameters:
+        - in: path
+          name: payoutId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [topupAmount]
+              properties:
+                topupAmount:
+                  type: number
+                note:
+                  type: string
+                approver:
+                  type: string
+                idempotencyKey:
+                  type: string
+      responses:
+        '200':
+          description: Topup applied
+components:
+  schemas:
+    CreateMerchantRequest:
+      type: object
+      required: [name, contactEmail]
+      properties:
+        name:
+          type: string
+        legalName:
+          type: string
+        contactEmail:
+          type: string
+          format: email
+        contactPhone:
+          type: string
+        payoutBankAccount:
+          type: object
+          properties:
+            bank:
+              type: string
+            accountNumber:
+              type: string
+            branchCode:
+              type: string
+        defaultPickupAddress:
+          $ref: '#/components/schemas/Address'
+        metadata:
+          type: object
+          additionalProperties: true
+    Merchant:
+      allOf:
+        - $ref: '#/components/schemas/CreateMerchantRequest'
+        - type: object
+          properties:
+            merchantId:
+              type: string
+    Address:
+      type: object
+      properties:
+        line1:
+          type: string
+        line2:
+          type: string
+        city:
+          type: string
+        province:
+          type: string
+        postalCode:
+          type: string
+        latitude:
+          type: number
+        longitude:
+          type: number
+    CreateParcelRequest:
+      type: object
+      required: [merchantId, recipient, destination]
+      properties:
+        merchantId:
+          type: string
+        externalRef:
+          type: string
+        recipient:
+          type: object
+          properties:
+            name:
+              type: string
+            phone:
+              type: string
+        destination:
+          $ref: '#/components/schemas/Address'
+        dimensions:
+          type: object
+          properties:
+            weightKg:
+              type: number
+            lengthCm:
+              type: number
+            widthCm:
+              type: number
+            heightCm:
+              type: number
+        serviceLevel:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+    Parcel:
+      allOf:
+        - $ref: '#/components/schemas/CreateParcelRequest'
+        - type: object
+          properties:
+            parcelId:
+              type: string
+            status:
+              type: string
+    GenerateRoutesRequest:
+      type: object
+      required: [serviceDate, candidates]
+      properties:
+        serviceDate:
+          type: string
+          format: date
+        zoneId:
+          type: string
+        candidates:
+          type: array
+          items:
+            type: object
+            required: [zoneId, plannedDistanceKm, parcels]
+            properties:
+              zoneId:
+                type: string
+              plannedDistanceKm:
+                type: number
+              estimatedDurationMin:
+                type: number
+              parcels:
+                type: array
+                items:
+                  type: object
+                  required: [parcelId]
+                  properties:
+                    parcelId:
+                      type: string
+                    lat:
+                      type: number
+                    lon:
+                      type: number
+    GenerateRoutesResponse:
+      type: object
+      properties:
+        serviceDate:
+          type: string
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              routeId:
+                type: string
+              status:
+                type: string
+    Route:
+      type: object
+      properties:
+        routeId:
+          type: string
+        zoneId:
+          type: string
+        serviceDate:
+          type: string
+          format: date
+        status:
+          type: string
+    AcceptRouteRequest:
+      type: object
+      properties:
+        acceptedAt:
+          type: string
+          format: date-time
+        deviceInfo:
+          type: object
+          additionalProperties: true
+    DriverScanRequest:
+      type: object
+      required: [parcelId, status]
+      properties:
+        parcelId:
+          type: string
+        status:
+          type: string
+        scannedAt:
+          type: string
+          format: date-time
+        location:
+          type: object
+          properties:
+            lat:
+              type: number
+            lon:
+              type: number
+            accuracyM:
+              type: number
+    CreateInvoiceRequest:
+      type: object
+      required: [merchantId, items]
+      properties:
+        merchantId:
+          type: string
+        dueDate:
+          type: string
+          format: date
+        currency:
+          type: string
+        customerEmail:
+          type: string
+          format: email
+        customerName:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            required: [description, qty, unitPrice]
+            properties:
+              description:
+                type: string
+              qty:
+                type: number
+              unitPrice:
+                type: number
+        metadata:
+          type: object
+          additionalProperties: true
+    InvoiceSummary:
+      type: object
+      properties:
+        invoiceId:
+          type: string
+        totalAmount:
+          type: number
+        currency:
+          type: string
+    Invoice:
+      allOf:
+        - $ref: '#/components/schemas/InvoiceSummary'
+        - type: object
+          properties:
+            merchantId:
+              type: string
+            status:
+              type: string
+            s3Key:
+              type: string
+    PaymentWebhookPayload:
+      type: object
+      required: [invoiceId, status, amount]
+      properties:
+        invoiceId:
+          type: string
+        status:
+          type: string
+        amount:
+          type: number
+        providerReference:
+          type: string
+        signature:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+    DriverPayout:
+      type: object
+      properties:
+        id:
+          type: string
+        driverId:
+          type: string
+        routeId:
+          type: string
+        totalPayout:
+          type: number
+        payoutStatus:
+          type: string
+        variancePct:
+          type: number
+    DriverEarningsResponse:
+      type: object
+      properties:
+        driverId:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              totalPayout:
+                type: number

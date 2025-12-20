@@ -1,0 +1,132 @@
+/**
+ * AFROOGO DRIVER PAYOUTS - PostgreSQL Schema
+ * 
+ * Database: afroogo_rds_production
+ * Region: eu-west-1 (Ireland) with read replicas in af-south-1
+ * 
+ * Indexes:
+ *   - PK on id (UUID)
+ *   - Composite on (driver_id, created_at) for driver history
+ *   - On payout_status for ops queries
+ *   - On variance_pct for anomaly detection
+ * 
+ * Status: PRODUCTION
+ */
+
+-- Main ledger: all driver payouts
+CREATE TABLE driver_payouts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Identifiers
+    driver_id VARCHAR(64) NOT NULL,
+    route_id VARCHAR(64) NOT NULL,
+
+    -- Payout model identifier
+    payout_model VARCHAR(32) NOT NULL DEFAULT 'MODEL_C_V1',
+
+    -- Route metrics
+    parcels_delivered INT NOT NULL CHECK (parcels_delivered > 0),
+    planned_distance_km NUMERIC(10, 2) NOT NULL CHECK (planned_distance_km > 0),
+    actual_distance_km NUMERIC(10, 2),
+
+    -- Variance analysis
+    variance_pct NUMERIC(7, 2), -- Can be negative (shorter actual)
+    CHECK (variance_pct IS NULL OR variance_pct >= -100),
+
+    -- Rate calculation components
+    base_rate_per_parcel NUMERIC(10, 2) NOT NULL,
+    km_factor_per_km NUMERIC(10, 4) NOT NULL,
+    rate_per_parcel NUMERIC(10, 2) NOT NULL,
+
+    -- Payout amounts
+    total_payout NUMERIC(12, 2) NOT NULL CHECK (total_payout >= 0),
+    extra_topup NUMERIC(12, 2) DEFAULT 0 CHECK (extra_topup >= 0),
+
+    -- Status workflow
+    payout_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    CHECK (payout_status IN ('PENDING', 'APPROVED', 'ON_HOLD', 'REVIEW', 'REJECTED', 'PAID')),
+
+    -- Timestamps
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finalized_at TIMESTAMPTZ,
+
+    -- Audit metadata
+    created_by VARCHAR(255) DEFAULT 'SYSTEM',
+    notes TEXT
+);
+
+-- Indexes for query optimization
+CREATE INDEX idx_driver_payouts_driver_id 
+  ON driver_payouts(driver_id, created_at DESC);
+
+CREATE INDEX idx_driver_payouts_route_id 
+  ON driver_payouts(route_id);
+
+CREATE INDEX idx_driver_payouts_status 
+  ON driver_payouts(payout_status, created_at DESC);
+
+CREATE INDEX idx_driver_payouts_variance 
+  ON driver_payouts(variance_pct DESC) 
+  WHERE variance_pct > 30; -- High-variance anomalies
+
+CREATE INDEX idx_driver_payouts_finalized 
+  ON driver_payouts(finalized_at DESC) 
+  WHERE finalized_at IS NOT NULL;
+
+-- Audit trigger: update updated_at on any change
+CREATE TRIGGER trigger_driver_payouts_updated_at
+  BEFORE UPDATE ON driver_payouts
+  FOR EACH ROW
+  EXECUTE FUNCTION update_timestamp();
+
+-- View: Waiting for approval
+CREATE VIEW v_payouts_pending_approval AS
+  SELECT
+    id,
+    driver_id,
+    route_id,
+    total_payout,
+    variance_pct,
+    payout_status,
+    created_at
+  FROM driver_payouts
+  WHERE payout_status IN ('ON_HOLD', 'REVIEW')
+  ORDER BY created_at ASC;
+
+-- View: High-variance anomalies (> 30%)
+CREATE VIEW v_payouts_high_variance AS
+  SELECT
+    id,
+    driver_id,
+    route_id,
+    planned_distance_km,
+    actual_distance_km,
+    variance_pct,
+    total_payout,
+    created_at
+  FROM driver_payouts
+  WHERE variance_pct > 30
+  ORDER BY variance_pct DESC;
+
+-- View: Daily summary by driver
+CREATE VIEW v_payouts_daily_summary AS
+  SELECT
+    driver_id,
+    DATE(created_at) as payout_date,
+    COUNT(*) as routes_completed,
+    SUM(parcels_delivered) as total_parcels,
+    SUM(planned_distance_km) as total_km,
+    SUM(total_payout + COALESCE(extra_topup, 0)) as total_earned,
+    AVG(variance_pct) as avg_variance_pct,
+    COUNT(CASE WHEN payout_status = 'APPROVED' THEN 1 END) as approved_count,
+    COUNT(CASE WHEN payout_status = 'ON_HOLD' THEN 1 END) as pending_count
+  FROM driver_payouts
+  GROUP BY driver_id, DATE(created_at)
+  ORDER BY payout_date DESC, total_earned DESC;
+
+-- Grant permissions
+GRANT SELECT ON driver_payouts TO analytics_user;
+GRANT SELECT ON v_payouts_pending_approval TO ops_team;
+GRANT SELECT ON v_payouts_high_variance TO fraud_detection;
+GRANT ALL ON driver_payouts TO rate_engine_service;

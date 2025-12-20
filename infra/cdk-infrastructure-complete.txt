@@ -1,0 +1,326 @@
+/**
+ * AFROOGO COMPLETE INFRASTRUCTURE - AWS CDK
+ * 
+ * Defines all services, databases, networks, and integrations
+ * 
+ * Status: PRODUCTION
+ */
+
+import * as cdk from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as rds from 'aws-cdk-lib/aws-rds';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as elasticache from 'aws-cdk-lib/aws-elasticache';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as kms from 'aws-cdk-lib/aws-kms';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+
+export class AfroGoStack extends cdk.Stack {
+  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // ====================================================================
+    // VPC & NETWORKING
+    // ====================================================================
+
+    const vpc = new ec2.Vpc(this, 'AfroGoVpc', {
+      maxAzs: 3,
+      natGateways: 1,
+    });
+
+    // ====================================================================
+    // AUTHENTICATION
+    // ====================================================================
+
+    const userPool = new cognito.UserPool(this, 'AfroGoUserPool', {
+      selfSignUpEnabled: true,
+      signInAliases: { email: true },
+      passwordPolicy: {
+        minLength: 12,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+      },
+    });
+
+    const userPoolClient = userPool.addClient('AfroGoClient', {
+      authFlows: {
+        userPassword: true,
+        adminUserPassword: true,
+      },
+    });
+
+    // ====================================================================
+    // DYNAMODB TABLES
+    // ====================================================================
+
+    // Merchants
+    new dynamodb.Table(this, 'MerchantsTable', {
+      tableName: 'Merchants',
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+    });
+
+    // Drivers
+    new dynamodb.Table(this, 'DriversTable', {
+      tableName: 'Drivers',
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecovery: true,
+    });
+
+    // Parcels
+    const parcelsTable = new dynamodb. Table(this, 'ParcelsTable', {
+      tableName: 'Parcels',
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb. BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecovery: true,
+    });
+
+    parcelsTable.addGlobalSecondaryIndex({
+      indexName: 'StatusIndex',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Routes
+    const routesTable = new dynamodb.Table(this, 'RoutesTable', {
+      tableName: 'Routes',
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecovery: true,
+    });
+
+    routesTable.addGlobalSecondaryIndex({
+      indexName: 'StatusIndex',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType. STRING },
+      sortKey: { name: 'createdAt', type: dynamodb. AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    routesTable.addGlobalSecondaryIndex({
+      indexName: 'DriverIndex',
+      partitionKey: { name: 'driverId', type: dynamodb. AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb. ProjectionType.ALL,
+    });
+
+    // ====================================================================
+    // AURORA POSTGRESQL
+    // ====================================================================
+
+    const dbCluster = new rds.DatabaseCluster(this, 'AfroGoDatabase', {
+      engine: rds.DatabaseClusterEngine.auroraPostgres({
+        version: rds. AuroraPostgresEngineVersion.VER_15_2,
+      }),
+      instances: 3,
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize. MEDIUM),
+      vpc,
+      backup: {
+        retention: cdk.Duration.days(30),
+      },
+      storageEncrypted: true,
+      deletionProtection: true,
+    });
+
+    // ====================================================================
+    // S3 BUCKETS
+    // ====================================================================
+
+    const documentsBucket = new s3. Bucket(this, 'DocumentsBucket', {
+      bucketName: `afroogo-documents-${this. account}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      versioned: true,
+      blockPublicAccess: s3. BlockPublicAccess.BLOCK_ALL,
+      lifecycleRules: [
+        {
+          transitions: [
+            {
+              transitionAfter: cdk.Duration.days(30),
+              storageClass: s3.StorageClass. GLACIER,
+            },
+          ],
+        },
+      ],
+    });
+
+    const invoicesBucket = new s3. Bucket(this, 'InvoicesBucket', {
+      bucketName: `afroogo-invoices-${this.account}`,
+      encryption: s3.BucketEncryption. S3_MANAGED,
+      versioned: true,
+    });
+
+    const parcelsBucket = new s3. Bucket(this, 'ParcelsBucket', {
+      bucketName: `afroogo-parcels-${this.account}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+    });
+
+    // ====================================================================
+    // ELASTICACHE (REDIS)
+    // ====================================================================
+
+    new elasticache.CfnCacheCluster(this, 'AfroGoCache', {
+      cacheNodeType: 'cache.t4g.micro',
+      engine: 'redis',
+      numCacheNodes: 3,
+      autoFailover: true,
+      multiAz: true,
+    });
+
+    // ====================================================================
+    // SQS QUEUES
+    // ====================================================================
+
+    const parcelCreationQueue = new sqs.Queue(this, 'ParcelCreationQueue', {
+      queueName: 'afroogo-parcel-creation',
+      visibilityTimeout: cdk.Duration.seconds(300),
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    const routeOptimizationQueue = new sqs.Queue(this, 'RouteOptimizationQueue', {
+      queueName: 'afroogo-route-optimization',
+      visibilityTimeout: cdk.Duration.seconds(600),
+    });
+
+    const notificationQueue = new sqs.Queue(this, 'NotificationQueue', {
+      queueName: 'afroogo-notifications',
+      visibilityTimeout: cdk.Duration.seconds(60),
+    });
+
+    // ====================================================================
+    // SNS TOPICS
+    // ====================================================================
+
+    const alertTopic = new sns.Topic(this, 'AlertTopic', {
+      topicName: 'afroogo-alerts',
+      displayName: 'AfroGo System Alerts',
+    });
+
+    // ====================================================================
+    // LAMBDA FUNCTIONS (Core Services)
+    // ====================================================================
+
+    // Merchant Service
+    new lambda.Function(this, 'MerchantServiceLambda', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: 'dist/handlers/merchant. handler',
+      code: lambda.Code.fromAsset('../services/merchant-service/dist'),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 512,
+      environment: {
+        MERCHANTS_TABLE: 'Merchants',
+        COGNITO_USER_POOL_ID: userPool.userPoolId,
+      },
+      vpc,
+    });
+
+    // Driver Service
+    new lambda.Function(this, 'DriverServiceLambda', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: 'dist/handlers/driver.handler',
+      code: lambda.Code.fromAsset('../services/driver-service/dist'),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 512,
+      environment: {
+        DRIVERS_TABLE: 'Drivers',
+      },
+      vpc,
+    });
+
+    // Parcel Service
+    new lambda.Function(this, 'ParcelServiceLambda', {
+      runtime: lambda. Runtime.NODEJS_18_X,
+      handler: 'dist/handlers/parcel.handler',
+      code: lambda.Code. fromAsset('../services/parcel-service/dist'),
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 512,
+      environment: {
+        PARCELS_TABLE: 'Parcels',
+        PARCELS_BUCKET: parcelsBucket.bucketName,
+      },
+      vpc,
+    });
+
+    // Rate Engine (Quote)
+    new lambda.Function(this, 'RateEngineQuoteLambda', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: 'dist/lambdas/quoteHandler.handler',
+      code: lambda.Code.fromAsset('../services/rate-engine/dist'),
+      timeout: cdk.Duration. seconds(30),
+      memorySize: 512,
+      reservedConcurrentExecutions: 100,
+      environment: {
+        ROUTES_TABLE: 'Routes',
+      },
+      vpc,
+    });
+
+    // Routing Service
+    new lambda.Function(this, 'RoutingServiceLambda', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: 'dist/handlers/routing.handler',
+      code: lambda.Code.fromAsset('../services/routing-service/dist'),
+      timeout: cdk. Duration.seconds(120),
+      memorySize: 1024,
+      environment: {
+        ROUTES_TABLE: 'Routes',
+        RATE_ENGINE_API_URL: 'https://rate-engine.afroogo.internal',
+      },
+      vpc,
+    });
+
+    // ====================================================================
+    // API GATEWAY
+    // ====================================================================
+
+    const api = new apigateway.RestApi(this, 'AfroGoApi', {
+      restApiName: 'AfroGo API',
+      description: 'AfroGo Logistics Complete API',
+      deployOptions: {
+        throttlingBurstLimit: 5000,
+        throttlingRateLimit: 2000,
+        loggingLevel: apigateway. MethodLoggingLevel.INFO,
+        dataTraceEnabled: false,
+      },
+    });
+
+    // ====================================================================
+    // CLOUDWATCH DASHBOARD
+    // ====================================================================
+
+    new cloudwatch.Dashboard(this, 'AfroGoDashboard', {
+      dashboardName: 'AfroGo-Main-Dashboard',
+    });
+
+    // ====================================================================
+    // OUTPUTS
+    // ====================================================================
+
+    new cdk.CfnOutput(this, 'UserPoolId', {
+      value: userPool.userPoolId,
+      exportName: 'AfroGoUserPoolId',
+    });
+
+    new cdk.CfnOutput(this, 'ApiEndpoint', {
+      value: api.url,
+      exportName: 'AfroGoApiEndpoint',
+    });
+
+    new cdk.CfnOutput(this, 'DatabaseCluster', {
+      value: dbCluster.clusterEndpoint.hostname,
+      exportName: 'AfroGoDatabaseCluster',
+    });
+  }
+}

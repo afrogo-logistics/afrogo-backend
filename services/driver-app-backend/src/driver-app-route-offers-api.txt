@@ -1,0 +1,139 @@
+/**
+ * DRIVER SERVICE - Route Offers API
+ * 
+ * Endpoint: GET /driver/routes/offers
+ * 
+ * Returns all OFFERED routes that the driver can accept.
+ * Data is shaped for the mobile app with full transparency on earnings.
+ * 
+ * Authentication: JWT from Cognito (driver context)
+ * 
+ * Status: PRODUCTION
+ */
+
+import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import {
+  DynamoDBClient,
+  QueryCommand,
+} from '@aws-sdk/client-dynamodb';
+
+const ddb = new DynamoDBClient({ region: process.env.AWS_REGION });
+
+// ============================================================================
+// TYPES
+// ============================================================================
+
+export interface FinancialsDisplay {
+  totalEarnings: number;
+  ratePerParcel: number;
+  currency: string;
+  modelVersion: string;
+  baseRate: number;
+  kmFactor: number;
+  distanceComponent: number; // Derived: kmFactor * km
+}
+
+export interface RouteOfferDisplay {
+  routeId: string;
+  zoneName: string;
+  stopCount: number;
+  plannedDistanceKm: number;
+  estimatedDurationMin: number;
+  financials: FinancialsDisplay;
+  confidence: {
+    isGuaranteed: boolean;
+    label: string;
+  };
+}
+
+// ============================================================================
+// HANDLER
+// ============================================================================
+
+export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+  try {
+    // Extract driver from JWT (Cognito authorizer)
+    const driverId = event.requestContext. authorizer?.claims?.['cognito:username'];
+
+    if (!driverId) {
+      return {
+        statusCode: 401,
+        body: JSON.stringify({ message: 'Unauthorized' }),
+      };
+    }
+
+    console.log('[DriverService] Fetching route offers for driver:', { driverId });
+
+    // Query OFFERED routes from DynamoDB
+    const res = await ddb.send(
+      new QueryCommand({
+        TableName: process.env.ROUTES_TABLE_NAME || 'Routes',
+        IndexName: 'StatusIndex',
+        KeyConditionExpression: '#status = :offered',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':offered': { S: 'OFFERED' },
+        },
+        Limit: 50, // Reasonable limit for app display
+        ScanIndexForward: false, // Newest first
+      }),
+    );
+
+    const offers: RouteOfferDisplay[] = (res. Items || [])
+      .filter(item => item. driverId. S === 'UNASSIGNED') // Only unassigned routes (broadcast)
+      .map(item => {
+        const snapshot = JSON.parse(item.payoutSnapshot.S! );
+        const plannedKm = Number(item.plannedDistanceKm. N! );
+        const stopCount = Number(item.stopCount.N!);
+        const kmFactor = snapshot.kmFactor || 0. 125;
+        const baseRate = snapshot.baseRate || 30;
+
+        const distanceComponent = kmFactor * plannedKm;
+
+        return {
+          routeId: item. routeId.S!,
+          zoneName: item.zoneId.S!. replace(/_/g, ' '),
+          stopCount,
+          plannedDistanceKm: plannedKm,
+          estimatedDurationMin: Number(item.estimatedDurationMin.N!),
+          financials: {
+            totalEarnings: snapshot.totalPayout,
+            ratePerParcel: snapshot.ratePerParcel,
+            currency: snapshot.currency || 'ZAR',
+            modelVersion: snapshot.modelVersion || 'MODEL_C_V1',
+            baseRate,
+            kmFactor,
+            distanceComponent,
+          },
+          confidence: {
+            isGuaranteed: true,
+            label: `Fixed: ZAR ${snapshot.totalPayout. toFixed(2)} based on ${plannedKm. toFixed(1)} km planned route`,
+          },
+        };
+      });
+
+    console.log('[DriverService] Returning offers:', {
+      driverId,
+      offerCount: offers.length,
+    });
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        offers,
+        timestamp: new Date().toISOString(),
+      }),
+    };
+  } catch (error: any) {
+    console.error('[DriverService] Error fetching offers:', error);
+
+    return {
+      statusCode: 500,
+      body: JSON.stringify({
+        message: 'Failed to fetch route offers',
+        error: error.message,
+      }),
+    };
+  }
+};
