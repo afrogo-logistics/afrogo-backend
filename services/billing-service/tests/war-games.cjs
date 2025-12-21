@@ -108,7 +108,8 @@ async function run() {
   const upB = await upsertLedger('inv-war-tie', 'm-war-2', 200, 'ZAR', 'b', b.event_time, b.id, b.event_seq);
   const finalTie = await client.query('SELECT paid_total_cents, last_event_time, last_event_db_id, last_event_seq FROM merchant_ledger WHERE invoice_id=$1', ['inv-war-tie']);
   console.log('WAR-GAMES-DEBUG: final ledger row:', finalTie.rows[0]);
-  assert(finalTie.rows[0].paid_total_cents === 200, 'tie-break did not result in expected winner');
+  // `paid_total_cents` is returned from pg as a string; coerce to Number for comparison
+  assert(Number(finalTie.rows[0].paid_total_cents) === 200, 'tie-break did not result in expected winner');
 
   // Scenario 4: insert fail / retry recovery — simulate by attempting to upsert with null lastEventDbId then later passing correct id
   console.log('WAR-GAMES: scenario 4 (insert failure & retry)');
