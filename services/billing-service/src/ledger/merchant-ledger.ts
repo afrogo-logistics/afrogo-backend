@@ -60,6 +60,9 @@ export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceR
     params.lastEventSeq,
   ];
   // Lazy require to avoid circular import at module load
+  // Lazy require to avoid circular import at module load. Allow var-requires
+  // for this intentional runtime import.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { queryWithRetry } = require('../../lib/pg-client');
   const res = await queryWithRetry(client, sql, paramsArr, 2);
   return res.rows?.[0] ?? null;
