@@ -17,7 +17,7 @@ export function normalizeMoney(amount: number | string): number {
 // We keep a typed upsert that delegates to the query layer for actual DB work.
 export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceRecord, payment: { amount: number | string; currency?: string; providerReference?: string; lastEventDbId?: number | string; lastEventTime?: string; lastEventSeq?: number }) {
   // Delegate normalization to the shared JS helper
-  const params = ledgerCjs.buildLedgerParams(invoice as any, { amount: payment.amount, currency: payment.currency, providerReference: payment.providerReference, lastEventDbId: payment.lastEventDbId, lastEventTime: payment.lastEventTime, lastEventSeq: payment.lastEventSeq });
+  const params = ledgerCjs.buildLedgerParams(invoice as unknown as Record<string, unknown>, { amount: payment.amount, currency: payment.currency, providerReference: payment.providerReference, lastEventDbId: payment.lastEventDbId, lastEventTime: payment.lastEventTime, lastEventSeq: payment.lastEventSeq });
   // Delegate DB upsert to existing pg-client.queryWithRetry via SQL here
   const sql = `
     INSERT INTO merchant_ledger (id, invoice_id, merchant_id, amount, currency, type, provider_reference, paid_at, created_at, last_event_time, last_event_db_id, last_event_seq, updated_at)
