@@ -20,3 +20,4 @@ API version lock:
 - Ensure API Gateway stage or mapping uses a fixed path prefix `/v1`.
 - Do NOT redeploy v1 endpoints under new base paths; create v2 if/when you change contracts.
 ```# CI Fixes Applied
+
