@@ -38,7 +38,7 @@ describe('Billing helpers', () => {
 
   test('generatePdfBuffer fallback returns buffer for simple HTML', async () => {
     const html = '<html><body><h1>Test</h1></body></html>';
-    const buf = await generatePdfBuffer(html, { invoiceId: 'INVOICE#1' });
+    const buf = await generatePdfBuffer(html);
     expect(Buffer.isBuffer(buf)).toBe(true);
     expect(buf.toString('utf-8')).toContain('<h1>Test</h1>');
   });

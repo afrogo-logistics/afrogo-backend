@@ -1,21 +1,5 @@
-/**
- * PG CLIENT (POOL) - Shared helper for all services
- *
- * - Uses pg.Pool with Secrets Manager credentials
- * - Exposes withPgClient() to borrow/release a client
- * - Exposes pgQueryWithRetry() for resilient queries on a given client
- *
- * Env:
- *  - REGION / AWS_REGION
- *  - PG_SECRET_ARN
- *  - PG_MAX_RETRIES (optional, default 2)
- */
-
-// @ts-ignore - AWS SDK v3 client types may be provided per-service; shimbed at build root
+import { Pool, PoolClient, PoolConfig, QueryResult } from 'pg';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-// Conservative typing for pg to avoid cross-service type mismatches during monorepo cleanup.
-// We treat pool/client/query results as `any` here and will tighten types later.
-import { Pool } from 'pg';
 
 const REGION = process.env.AWS_REGION || process.env.REGION || 'af-south-1';
 const PG_SECRET_ARN = process.env.PG_SECRET_ARN || '';
@@ -25,19 +9,31 @@ export const PG_MAX_RETRIES = Number.isFinite(parsedRetries) && parsedRetries >=
 
 const secrets = new SecretsManagerClient({ region: REGION });
 
-let pool: any = null;
+let pool: Pool | null = null;
+
+interface DbConfig {
+  host: string;
+  port?: number;
+  dbname?: string;
+  database?: string;
+  username?: string;
+  user?: string;
+  password: string;
+  ssl?: string | boolean;
+  maxConnections?: number;
+}
 
 /**
  * Lazily create & cache a pg.Pool.
  */
-async function getPgPool(): Promise<any> {
+async function getPgPool(): Promise<Pool> {
   if (pool) return pool;
   if (!PG_SECRET_ARN) throw new Error('PG_SECRET_ARN not configured');
 
   const sec = await secrets.send(new GetSecretValueCommand({ SecretId: PG_SECRET_ARN }));
   if (!sec.SecretString) throw new Error('Postgres secret empty');
 
-  const cfg = JSON.parse(sec.SecretString);
+  const cfg: DbConfig = JSON.parse(sec.SecretString);
 
   pool = new Pool({
     host: cfg.host,
@@ -51,8 +47,7 @@ async function getPgPool(): Promise<any> {
     connectionTimeoutMillis: 10_000,
   });
 
-  pool.on('error', (err: unknown) => {
-    // err is unknown at runtime; log safely
+  pool.on('error', (err: Error) => {
     console.error('[PG_POOL] idle client error', err);
   });
 
@@ -60,10 +55,14 @@ async function getPgPool(): Promise<any> {
   return pool;
 }
 
+export async function getPool(): Promise<Pool> {
+  return getPgPool();
+}
+
 /**
  * Borrow a client from the pool, run fn, then release.
  */
-export async function withPgClient<T>(fn: (client: any) => Promise<T>): Promise<T> {
+export async function withPgClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const p = await getPgPool();
   const client = await p.connect();
   try {
@@ -78,23 +77,32 @@ export async function withPgClient<T>(fn: (client: any) => Promise<T>): Promise<
   }
 }
 
+export async function withClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  return withPgClient(fn);
+}
+
+export async function query<T = unknown>(text: string, params?: unknown[]): Promise<QueryResult<T>> {
+  const p = await getPgPool();
+  return p.query(text, params) as Promise<QueryResult<T>>;
+}
+
 /**
  * Run a query on a given client with simple exponential backoff retries.
  * Micro-optimisation: do not wait after the final failed attempt.
  */
 export async function pgQueryWithRetry(
-  client: any,
+  client: PoolClient,
   sql: string,
-  params: any[] = [],
+  params: unknown[] = [],
   maxRetries: number = PG_MAX_RETRIES,
-): Promise<any> {
-  let lastErr: any = null;
+): Promise<QueryResult> {
+  let lastErr: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await client.query(sql, params);
     } catch (err) {
-      lastErr = err;
+      lastErr = err as Error;
       console.warn(`[PG] query attempt ${attempt} failed:`, String(err));
       // Only sleep if we'll actually retry again
       if (attempt < maxRetries) {
