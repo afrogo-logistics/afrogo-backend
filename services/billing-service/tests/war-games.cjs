@@ -101,10 +101,13 @@ async function run() {
   const b = await insertEvent(provider, 'evt-tie-b', 'inv-war-tie', 'm-war-2', 200, 'ZAR', {}, ts);
   // Ensure they exist
   assert(a && b, 'tie events not created');
+  console.log('WAR-GAMES-DEBUG: event a:', a);
+  console.log('WAR-GAMES-DEBUG: event b:', b);
   // Upsert with a then with b; since times equal, DB id ordering will decide — because ids are UUIDs, we assert the second upsert which has >= id should apply
   const upA = await upsertLedger('inv-war-tie', 'm-war-2', 100, 'ZAR', 'a', a.event_time, a.id, a.event_seq);
   const upB = await upsertLedger('inv-war-tie', 'm-war-2', 200, 'ZAR', 'b', b.event_time, b.id, b.event_seq);
-  const finalTie = await client.query('SELECT paid_total_cents FROM merchant_ledger WHERE invoice_id=$1', ['inv-war-tie']);
+  const finalTie = await client.query('SELECT paid_total_cents, last_event_time, last_event_db_id, last_event_seq FROM merchant_ledger WHERE invoice_id=$1', ['inv-war-tie']);
+  console.log('WAR-GAMES-DEBUG: final ledger row:', finalTie.rows[0]);
   assert(finalTie.rows[0].paid_total_cents === 200, 'tie-break did not result in expected winner');
 
   // Scenario 4: insert fail / retry recovery — simulate by attempting to upsert with null lastEventDbId then later passing correct id
