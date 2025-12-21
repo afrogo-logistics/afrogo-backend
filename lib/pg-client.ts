@@ -11,11 +11,8 @@
  *  - PG_MAX_RETRIES (optional, default 2)
  */
 
-// @ts-ignore - AWS SDK v3 client types may be provided per-service; shimbed at build root
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-// Conservative typing for pg to avoid cross-service type mismatches during monorepo cleanup.
-// We treat pool/client/query results as `any` here and will tighten types later.
-import { Pool } from 'pg';
+import { Pool, PoolClient, QueryResult } from 'pg';
 
 const REGION = process.env.AWS_REGION || process.env.REGION || 'af-south-1';
 const PG_SECRET_ARN = process.env.PG_SECRET_ARN || '';
@@ -25,12 +22,12 @@ export const PG_MAX_RETRIES = Number.isFinite(parsedRetries) && parsedRetries >=
 
 const secrets = new SecretsManagerClient({ region: REGION });
 
-let pool: any = null;
+let pool: Pool | null = null;
 
 /**
  * Lazily create & cache a pg.Pool.
  */
-async function getPgPool(): Promise<any> {
+async function getPgPool(): Promise<Pool> {
   if (pool) return pool;
   if (!PG_SECRET_ARN) throw new Error('PG_SECRET_ARN not configured');
 
@@ -63,7 +60,7 @@ async function getPgPool(): Promise<any> {
 /**
  * Borrow a client from the pool, run fn, then release.
  */
-export async function withPgClient<T>(fn: (client: any) => Promise<T>): Promise<T> {
+export async function withPgClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const p = await getPgPool();
   const client = await p.connect();
   try {
@@ -83,12 +80,12 @@ export async function withPgClient<T>(fn: (client: any) => Promise<T>): Promise<
  * Micro-optimisation: do not wait after the final failed attempt.
  */
 export async function pgQueryWithRetry(
-  client: any,
+  client: PoolClient,
   sql: string,
-  params: any[] = [],
+  params: unknown[] = [],
   maxRetries: number = PG_MAX_RETRIES,
-): Promise<any> {
-  let lastErr: any = null;
+): Promise<QueryResult> {
+  let lastErr: unknown = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {

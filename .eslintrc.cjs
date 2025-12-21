@@ -18,6 +18,15 @@ module.exports = {
     '@typescript-eslint/no-explicit-any': 'warn',
     '@typescript-eslint/explicit-module-boundary-types': 'off',
     '@typescript-eslint/ban-ts-comment': 'warn'
-  }
+  },
+  overrides: [
+    {
+      // Disable type-aware linting for .js files
+      files: ['*.js', '**/*.js'],
+      parserOptions: {
+        project: null
+      }
+    }
+  ]
 };
 
