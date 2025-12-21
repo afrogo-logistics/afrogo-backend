@@ -21,40 +21,46 @@ async function run() {
   // Load migration SQL files to create tables (idempotent)
   const m1 = fs.readFileSync(path.join(__dirname, '..', 'migrations', '001-create-merchant-payment-events.sql'), 'utf8');
   const m2 = fs.readFileSync(path.join(__dirname, '..', 'migrations', '002-create-merchant-ledger.sql'), 'utf8');
+  const m3 = fs.readFileSync(path.join(__dirname, '..', 'migrations', '003-add-event-seq.sql'), 'utf8');
+  const m4 = fs.readFileSync(path.join(__dirname, '..', 'migrations', '004-add-ledger-last-event-seq.sql'), 'utf8');
 
   // The migration files include BEGIN/COMMIT; execute them as-is
+  // Apply base migrations + event_seq / ledger seq migrations so tests exercise the new deterministic tie-break
   await client.query(m1);
   await client.query(m2);
+  await client.query(m3);
+  await client.query(m4);
 
   // Helper to insert event immutably and return id + event_time
   async function insertEvent(provider, providerEventId, invoiceId, merchantId, amountCents, currency, rawPayload, eventTime) {
     const insertSql = `INSERT INTO merchant_payment_events (provider, provider_event_id, invoice_id, merchant_id, event_type, event_time, amount_cents, currency, status, raw_payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) ON CONFLICT (provider, provider_event_id) DO NOTHING`;
     await client.query(insertSql, [provider, providerEventId, invoiceId, merchantId, 'TEST', eventTime || new Date().toISOString(), amountCents, currency, 'PAID', JSON.stringify(rawPayload || {})]);
-    const sel = await client.query('SELECT id, event_time FROM merchant_payment_events WHERE provider=$1 AND provider_event_id=$2 LIMIT 1', [provider, providerEventId]);
+    const sel = await client.query('SELECT id, event_time, event_seq FROM merchant_payment_events WHERE provider=$1 AND provider_event_id=$2 LIMIT 1', [provider, providerEventId]);
     return sel.rows[0] || null;
   }
 
   // Helper to run the conditional upsert similar to shared-ledger
-  async function upsertLedger(invoiceId, merchantId, amountCents, currency, providerReference, lastEventTime, lastEventDbId) {
+  async function upsertLedger(invoiceId, merchantId, amountCents, currency, providerReference, lastEventTime, lastEventDbId, lastEventSeq) {
     const sql = `
-      INSERT INTO merchant_ledger (id, invoice_id, merchant_id, invoice_total_cents, paid_total_cents, currency, last_event_time, last_event_db_id, paid_at, created_at, updated_at)
-      VALUES (gen_random_uuid(), $1,$2,0,$3,$4,$5,$6,now(),now(),now())
+      INSERT INTO merchant_ledger (id, invoice_id, merchant_id, invoice_total_cents, paid_total_cents, currency, last_event_time, last_event_db_id, last_event_seq, paid_at, created_at, updated_at)
+      VALUES (gen_random_uuid(), $1,$2,0,$3,$4,$5,$6,$7,now(),now(),now())
       ON CONFLICT (invoice_id) DO UPDATE SET
         paid_total_cents = EXCLUDED.paid_total_cents,
         currency = EXCLUDED.currency,
         last_event_time = EXCLUDED.last_event_time,
         last_event_db_id = EXCLUDED.last_event_db_id,
+        last_event_seq = EXCLUDED.last_event_seq,
         updated_at = now()
       WHERE (
         EXCLUDED.last_event_time IS NOT NULL AND (
           merchant_ledger.last_event_time IS NULL OR
           EXCLUDED.last_event_time > merchant_ledger.last_event_time OR
-          (EXCLUDED.last_event_time = merchant_ledger.last_event_time AND (merchant_ledger.last_event_db_id IS NULL OR EXCLUDED.last_event_db_id IS NOT NULL AND EXCLUDED.last_event_db_id >= merchant_ledger.last_event_db_id))
+          (EXCLUDED.last_event_time = merchant_ledger.last_event_time AND (merchant_ledger.last_event_seq IS NULL OR (EXCLUDED.last_event_seq IS NOT NULL AND EXCLUDED.last_event_seq >= merchant_ledger.last_event_seq)))
         )
       )
-      RETURNING id, paid_total_cents, last_event_time, last_event_db_id
+      RETURNING id, paid_total_cents, last_event_time, last_event_db_id, last_event_seq
     `;
-    const res = await client.query(sql, [invoiceId, merchantId, amountCents, currency, lastEventTime, lastEventDbId]);
+    const res = await client.query(sql, [invoiceId, merchantId, amountCents, currency, lastEventTime, lastEventDbId, lastEventSeq]);
     return res.rows[0] || null;
   }
 
@@ -95,11 +101,15 @@ async function run() {
   const b = await insertEvent(provider, 'evt-tie-b', 'inv-war-tie', 'm-war-2', 200, 'ZAR', {}, ts);
   // Ensure they exist
   assert(a && b, 'tie events not created');
+  console.log('WAR-GAMES-DEBUG: event a:', a);
+  console.log('WAR-GAMES-DEBUG: event b:', b);
   // Upsert with a then with b; since times equal, DB id ordering will decide — because ids are UUIDs, we assert the second upsert which has >= id should apply
-  const upA = await upsertLedger('inv-war-tie', 'm-war-2', 100, 'ZAR', 'a', a.event_time, a.id);
-  const upB = await upsertLedger('inv-war-tie', 'm-war-2', 200, 'ZAR', 'b', b.event_time, b.id);
-  const finalTie = await client.query('SELECT paid_total_cents FROM merchant_ledger WHERE invoice_id=$1', ['inv-war-tie']);
-  assert(finalTie.rows[0].paid_total_cents === 200, 'tie-break did not result in expected winner');
+  const upA = await upsertLedger('inv-war-tie', 'm-war-2', 100, 'ZAR', 'a', a.event_time, a.id, a.event_seq);
+  const upB = await upsertLedger('inv-war-tie', 'm-war-2', 200, 'ZAR', 'b', b.event_time, b.id, b.event_seq);
+  const finalTie = await client.query('SELECT paid_total_cents, last_event_time, last_event_db_id, last_event_seq FROM merchant_ledger WHERE invoice_id=$1', ['inv-war-tie']);
+  console.log('WAR-GAMES-DEBUG: final ledger row:', finalTie.rows[0]);
+  // `paid_total_cents` is returned from pg as a string; coerce to Number for comparison
+  assert(Number(finalTie.rows[0].paid_total_cents) === 200, 'tie-break did not result in expected winner');
 
   // Scenario 4: insert fail / retry recovery — simulate by attempting to upsert with null lastEventDbId then later passing correct id
   console.log('WAR-GAMES: scenario 4 (insert failure & retry)');
