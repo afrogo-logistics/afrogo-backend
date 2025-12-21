@@ -18,13 +18,9 @@ jobs:
           cache: 'npm'
       - name: Install dependencies
         run: npm ci
-      - name: Lint
-        # Relax strict zero-warnings check in CI for now so builds are unblocked.
-        # The lint rule set currently yields many warnings across the mono-repo
-        # (mostly `no-explicit-any`). We'll keep warnings visible but not fail the
-        # workflow on them. If you prefer, we can instead tune ESLint rules or
-        # add a stricter path/override for services under active development.
-        run: npm run lint
+      - name: Lint (ESLint)
+        # Restore strict lint behavior: fail on any warnings so we keep CI clean.
+        run: npm run lint -- --max-warnings=0
       - name: Typecheck
         run: npm run typecheck
       - name: Run tests

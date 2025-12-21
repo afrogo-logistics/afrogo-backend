@@ -3,9 +3,10 @@
 // duplication and ensure tests and production share the same logic, re-export
 // the functions from that module while keeping TypeScript types here.
 import type { PgTxClient, InvoiceRecord } from '@afrogo/shared-types';
-import { createRequire } from 'module';
-const requireCjs = createRequire(import.meta.url);
-const ledgerCjs = requireCjs('../ledger.cjs');
+// Import the CommonJS helper using an ES default import (Node will interop).
+// This keeps the typed surface here while reusing the canonical JS helper.
+import ledgerCjs from '../ledger.cjs';
+import { queryWithRetry } from '../../lib/pg-client';
 
 export function normalizeMoney(amount: number | string): number {
   // Delegate to the JS helper's param building and extract amount
@@ -59,11 +60,6 @@ export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceR
     params.lastEventDbId,
     params.lastEventSeq,
   ];
-  // Lazy require to avoid circular import at module load
-  // Lazy require to avoid circular import at module load. Allow var-requires
-  // for this intentional runtime import.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { queryWithRetry } = require('../../lib/pg-client');
   const res = await queryWithRetry(client, sql, paramsArr, 2);
   return res.rows?.[0] ?? null;
 }
