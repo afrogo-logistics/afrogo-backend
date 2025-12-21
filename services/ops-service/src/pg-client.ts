@@ -1,6 +1,10 @@
 // Lightweight bridge so imports of './pg-client' in ops-service resolve to the root lib pg-client.
 export * from '../../../lib/pg-client';
 
+// This file intentionally uses a runtime require to forward to the root lib
+// implementation (avoids circular import issues). Allow var-requires for this
+// line.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const _root: any = require('../../../lib/pg-client');
 
 export async function withPgClient(cb: any) {

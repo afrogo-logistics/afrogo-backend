@@ -11,8 +11,8 @@
     "services/*"
   ],
   "scripts": {
-  "lint": "eslint \"services/**/src/**/*.{ts,js}\" \"lib/**/*.{ts,js}\" --ext .ts,.js",
-  "lint:fix": "eslint \"services/**/src/**/*.{ts,js}\" \"lib/**/*.{ts,js}\" --ext .ts,.js --fix",
+  "lint": "eslint \"services/**/src/**/*.ts\" \"lib/**/*.ts\" --ext .ts",
+  "lint:fix": "eslint \"services/**/src/**/*.ts\" \"lib/**/*.ts\" --ext .ts --fix",
   "format": "prettier --write \"**/*.{ts,js,json,md,yaml,yml}\"",
   "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
   "test": "node services/billing-service/tests/run-tests.cjs",
