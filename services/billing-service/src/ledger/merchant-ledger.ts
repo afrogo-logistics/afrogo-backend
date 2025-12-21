@@ -3,9 +3,10 @@
 // duplication and ensure tests and production share the same logic, re-export
 // the functions from that module while keeping TypeScript types here.
 import type { PgTxClient, InvoiceRecord } from '@afrogo/shared-types';
-import { createRequire } from 'module';
-const requireCjs = createRequire(import.meta.url);
-const ledgerCjs = requireCjs('../ledger.cjs');
+// Import the CommonJS helper using an ES default import (Node will interop).
+// This keeps the typed surface here while reusing the canonical JS helper.
+import ledgerCjs from '../ledger.cjs';
+import { queryWithRetry } from '../../lib/pg-client';
 
 export function normalizeMoney(amount: number | string): number {
   // Delegate to the JS helper's param building and extract amount
@@ -16,7 +17,7 @@ export function normalizeMoney(amount: number | string): number {
 // We keep a typed upsert that delegates to the query layer for actual DB work.
 export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceRecord, payment: { amount: number | string; currency?: string; providerReference?: string; lastEventDbId?: number | string; lastEventTime?: string; lastEventSeq?: number }) {
   // Delegate normalization to the shared JS helper
-  const params = ledgerCjs.buildLedgerParams(invoice as any, { amount: payment.amount, currency: payment.currency, providerReference: payment.providerReference, lastEventDbId: payment.lastEventDbId, lastEventTime: payment.lastEventTime, lastEventSeq: payment.lastEventSeq });
+  const params = ledgerCjs.buildLedgerParams(invoice as unknown as Record<string, unknown>, { amount: payment.amount, currency: payment.currency, providerReference: payment.providerReference, lastEventDbId: payment.lastEventDbId, lastEventTime: payment.lastEventTime, lastEventSeq: payment.lastEventSeq });
   // Delegate DB upsert to existing pg-client.queryWithRetry via SQL here
   const sql = `
     INSERT INTO merchant_ledger (id, invoice_id, merchant_id, amount, currency, type, provider_reference, paid_at, created_at, last_event_time, last_event_db_id, last_event_seq, updated_at)
@@ -59,8 +60,6 @@ export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceR
     params.lastEventDbId,
     params.lastEventSeq,
   ];
-  // Lazy require to avoid circular import at module load
-  const { queryWithRetry } = require('../../lib/pg-client');
   const res = await queryWithRetry(client, sql, paramsArr, 2);
   return res.rows?.[0] ?? null;
 }
