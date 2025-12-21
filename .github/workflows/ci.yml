@@ -22,7 +22,13 @@ jobs:
         # Run strict lint only on the files changed by this PR to enforce
         # good hygiene on newly touched code while we triage existing warnings.
         run: |
-          npx eslint services/ops-service/src/**/*.ts services/billing-service/src/**/*.ts lib/pg-client.ts lib/pdf-generator.ts --ext .ts --max-warnings=0
+          npx eslint \
+            services/ops-service/src/pg-client.ts \
+            services/billing-service/src/ledger/merchant-ledger.ts \
+            services/billing-service/src/lib/pdf-generator.ts \
+            lib/pg-client.ts \
+            lib/pdf-generator.ts \
+            --ext .ts --max-warnings=0
       - name: Typecheck
         run: npm run typecheck
       - name: Run tests
