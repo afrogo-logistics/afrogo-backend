@@ -1,4 +1,4 @@
-const { CloudWatchClient, PutMetricAlarmCommand } = require('@aws-sdk/client-cloudwatch');
+import { CloudWatchClient, PutMetricAlarmCommand } from '@aws-sdk/client-cloudwatch';
 
 /**
  * Simple script to create a few CloudWatch alarms for billing metrics.
@@ -40,6 +40,6 @@ async function run() {
 }
 
 run().catch((err) => {
-  console.error('Failed to create alarms', err && err.stack || err);
+  console.error('Failed to create alarms', (err && err.stack) || err);
   process.exit(1);
 });
