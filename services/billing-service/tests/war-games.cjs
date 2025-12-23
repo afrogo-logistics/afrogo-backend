@@ -18,6 +18,9 @@ async function run() {
 
   await client.connect();
 
+  // Ensure pgcrypto is available for gen_random_uuid in migrations
+  await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+
   // Load migration SQL files to create tables (idempotent)
   const m1 = fs.readFileSync(path.join(__dirname, '..', 'migrations', '001-create-merchant-payment-events.sql'), 'utf8');
   const m2 = fs.readFileSync(path.join(__dirname, '..', 'migrations', '002-create-merchant-ledger.sql'), 'utf8');
@@ -30,6 +33,9 @@ async function run() {
   await client.query(m2);
   await client.query(m3);
   await client.query(m4);
+
+  // Ensure a clean slate between runs (compose reuses PG volume across runs)
+  await client.query('TRUNCATE merchant_payment_events, merchant_ledger RESTART IDENTITY');
 
   // Helper to insert event immutably and return id + event_time
   async function insertEvent(provider, providerEventId, invoiceId, merchantId, amountCents, currency, rawPayload, eventTime) {
