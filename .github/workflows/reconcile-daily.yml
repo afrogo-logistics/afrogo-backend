@@ -7,7 +7,7 @@ on:
 
 jobs:
   reconcile:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, vpc, aurora]
     steps:
       - uses: actions/checkout@v4
       - name: Use Node.js 20
@@ -20,11 +20,11 @@ jobs:
         run: npm run build:packages
       - name: Run reconcile script
         env:
-          PGHOST: 127.0.0.1
-          PGPORT: 5432
-          PGUSER: postgres
-          PGPASSWORD: postgres
-          PGDATABASE: postgres
+          PGHOST: ${{ secrets.PGHOST }}
+          PGPORT: ${{ secrets.PGPORT }}
+          PGUSER: ${{ secrets.PGUSER }}
+          PGPASSWORD: ${{ secrets.PGPASSWORD }}
+          PGDATABASE: ${{ secrets.PGDATABASE }}
         run: |
           # If you want this to run against staging Aurora, replace the PG_* envs with secrets in the repo
           node services/billing-service/tools/reconcile.js
