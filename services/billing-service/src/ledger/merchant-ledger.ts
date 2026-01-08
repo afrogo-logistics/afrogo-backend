@@ -16,7 +16,7 @@ export function normalizeMoney(amount: number | string): number {
 // We keep a typed upsert that delegates to the query layer for actual DB work.
 export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceRecord, payment: { amount: number | string; currency?: string; providerReference?: string; lastEventDbId?: number | string; lastEventTime?: string }) {
   // Delegate normalization to the shared JS helper
-  const params = ledgerCjs.buildLedgerParams(invoice as any, { amount: payment.amount, currency: payment.currency, providerReference: payment.providerReference, lastEventDbId: payment.lastEventDbId, lastEventTime: payment.lastEventTime });
+  const params = ledgerCjs.buildLedgerParams(invoice, { amount: payment.amount, currency: payment.currency, providerReference: payment.providerReference, lastEventDbId: payment.lastEventDbId, lastEventTime: payment.lastEventTime });
   // Delegate DB upsert to existing pg-client.queryWithRetry via SQL here
   const sql = `
     INSERT INTO merchant_ledger (id, invoice_id, merchant_id, amount, currency, type, provider_reference, paid_at, created_at, updated_at, last_event_time, last_event_db_id)
@@ -57,8 +57,8 @@ export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceR
     params.lastEventTime,
     params.lastEventDbId,
   ];
-  // Lazy require to avoid circular import at module load
-  const { queryWithRetry } = require('../../lib/pg-client');
-  const res = await queryWithRetry(client, sql, paramsArr, 2);
+  // Import from root lib pg-client which has pgQueryWithRetry
+  const { pgQueryWithRetry } = await import('../../../../lib/pg-client.js');
+  const res = await pgQueryWithRetry(client, sql, paramsArr, 2);
   return res.rows?.[0] ?? null;
 }
