@@ -57,8 +57,8 @@ export async function upsertMerchantLedger(client: PgTxClient, invoice: InvoiceR
     params.lastEventTime,
     params.lastEventDbId,
   ];
-  // Lazy require to avoid circular import at module load
-  const { queryWithRetry } = require('../../lib/pg-client');
+  // Lazy import to avoid circular import at module load
+  const { queryWithRetry } = await import('../../lib/pg-client.js');
   const res = await queryWithRetry(client, sql, paramsArr, 2);
   return res.rows?.[0] ?? null;
 }

@@ -9,14 +9,7 @@
  *  - In local dev, puppeteer-core + a local Chrome will work if you provide an executablePath.
  */
 
-import path from 'path';
-import fs from 'fs';
-import { tmpdir } from 'os';
-import { promisify } from 'util';
-
-const writeFile = promisify(fs.writeFile);
-
-export async function generatePdfBuffer(html: string, opts?: { invoiceId?: string }): Promise<Buffer> {
+export async function generatePdfBuffer(html: string, _opts?: { invoiceId?: string }): Promise<Buffer> {
   // Try to use chrome-aws-lambda + puppeteer-core if available
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -24,7 +17,7 @@ export async function generatePdfBuffer(html: string, opts?: { invoiceId?: strin
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const puppeteer = require('puppeteer-core');
 
-    const launchArgs: any = chromium.args;
+    const launchArgs: string[] = chromium.args;
     const executablePath = await chromium.executablePath;
     const browser = await puppeteer.launch({
       args: launchArgs,
